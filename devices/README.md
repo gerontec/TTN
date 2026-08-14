@@ -119,6 +119,58 @@ Port 8 dagegen verschoben (`>> 6`) gebildet wird.
 | 7 | nur Alarm + Batterie |
 | 8 | WLAN-SSID + RSSI |
 
+### Was der rote Knopf wirklich tut
+
+Quelle: [dragino/TrackerD](https://github.com/dragino/TrackerD), namentlich
+[`extiButtonLS.cpp`](https://github.com/dragino/TrackerD/blob/main/Example/LoRaWAN/examples/TrackerD/extiButtonLS.cpp)
+und [`TrackerD.ino`](https://github.com/dragino/TrackerD/blob/main/Example/LoRaWAN/examples/TrackerD/TrackerD.ino).
+Die Firmware ist ein Arduino-Sketch; unser Gerät ist `sensor_type == 13`.
+
+Die **Haltezeit** entscheidet, in drei Stufen (`attachDuringLongPress1()`):
+
+| Gedrückt | Wirkung | LED |
+|---|---|---|
+| 2–10 s | `sys.alarm = 1` → **Alarm** | rot + grün |
+| 10–30 s | `sys.sleep_flag = 1` → Standby | rot + blau |
+| > 30 s | `sys.alarm = 1; alarm();` | rot |
+
+Die untere Grenze ist `sys.exit_alarm_time`, in `TrackerD.ino:1301` auf
+**2000 ms** gesetzt und per `AT+EAT` oder Downlink änderbar.
+
+Die mittlere Stufe ist die Falle. Beim Loslassen greift dort
+`attachLongPressStop1()`:
+
+```c
+else if (sys.sleep_flag == 1) {
+  if (LongPress1 == 1) {
+    sys.gps_alarm = 0;
+    sys.alarm     = 0;
+    sys.alarm_count = 0;
+    myIMU2.imu_power_down();     // Beschleunigungssensor stromlos
+  }
+}
+```
+
+Wer also „gut lange" drückt, schaltet nicht den Alarm ein, sondern aus — und
+nimmt den Bewegungssensor gleich mit. Danach schweigt das Gerät vollständig,
+auch auf Gateway-Ebene, denn Bewegung ist der Auslöser der regulären
+Positionsmeldungen (`Transport: "STILL"` im dekodierten Uplink). Da kommt es
+von selbst nicht mehr heraus; zuverlässig hilft nur ein harter Reset über USB.
+
+Zwei weitere Eigenheiten, die im Datenblatt fehlen:
+
+- **Ein kurzer Druck tut nichts.** `attachClick` und `attachDoubleClick` sind
+  auskommentiert (`extiButtonLS.cpp:325–326`), registriert sind nur
+  LongPressStart/During/Stop und MultiClick.
+- **`attachMultiClick1()` entschärft eher, als dass es auslöst:** 3 Klicks im
+  Standby → `esp_deep_sleep_start()`, 10 Klicks → „Exit Alarm", und der
+  `default:`-Zweig — also *jede andere* Klickzahl — setzt ebenfalls
+  `sys.alarm = 0` und fährt die IMU herunter.
+
+Im Alarmzustand sendet er wiederholt (`send NO.%d Alarm data`, `alarm_state()`
+in `TrackerD.ino:1807`), im Abstand `sys.atdc` — einstellbar per `AT+ATDC`
+oder per Downlink (`TrackerD.ino:2627`).
+
 ### TrackerD im Krisen-Rundruf
 
 `dell/trackerd_bcast.py` (systemd: `trackerd-bcast.service`) hört auf die

@@ -217,6 +217,13 @@ IPv4-Netze 192.168.5.x und 192.168.178.x dasselbe Segment.
 Seit 14.08.2026 hängt an dem Gateway eine vollständige Verarbeitungskette.
 Details zu den Geräten in [`devices/README.md`](devices/README.md).
 
+Die TrackerD-Firmware ist ein offener Arduino-Sketch:
+[dragino/TrackerD](https://github.com/dragino/TrackerD). Er lohnt den Blick,
+weil er Verhalten festlegt, das in keinem Datenblatt steht — etwa dass der rote
+Knopf je nach Haltezeit den Alarm auslöst *oder* abschaltet
+([`extiButtonLS.cpp`](https://github.com/dragino/TrackerD/blob/main/Example/LoRaWAN/examples/TrackerD/extiButtonLS.cpp),
+aufgeschlüsselt in `devices/README.md`).
+
 ```
   TrackerD          LA66 USB-Adapter
   A840414F1188076C  A8404117F18962E0
