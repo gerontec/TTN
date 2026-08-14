@@ -3,6 +3,9 @@
 Konfiguration und Instandsetzung des LoRaWAN-Gateways in 83661 Lenggries,
 Stand **14.08.2026**. Alle Zugangsdaten sind aus diesem Repo entfernt.
 
+**Einstieg für die Weiterarbeit: [TODO.md](TODO.md)** — Zustand, Fallen und
+offene Punkte, geschrieben als Wiederaufsetzpunkt.
+
 ## Gerät
 
 | | |
@@ -28,15 +31,17 @@ Stand **14.08.2026**. Alle Zugangsdaten sind aus diesem Repo entfernt.
    +---------------------------+
         |                    |
         | server1            | server2
-        | Internet           | WireGuard
+        | Internet           | LAN, direkt (1,2 ms)
         v                    v
-  eu1.cloud.thethings   +----------+      +------------------+
-    .network:1700       | ipgate1  | ---> | heissa.de        |
-   (The Things Network) | 10.9.0.1 |      | 10.9.0.10        |
-                        +----------+      | gateway-bridge   |
-                                          |   :1700 -> MQTT  |
-                                          | ChirpStack :8080 |
-                                          +------------------+
+  eu1.cloud.thethings   +----------------------+
+    .network:1700       | dell-3660            |
+   (The Things Network) | 192.168.5.23         |
+        |               | gateway-bridge :1700 |
+        v               | ChirpStack :8090     |
+   heissa.de            | mosquitto :1883      |
+   lora-bridge          +----------------------+
+   wagodb + Traccar        Krisenpfad: braucht weder
+                           Internet noch WireGuard
 ```
 
 **Netz-Trennung:** `10.9.0.0/24` = WireGuard (Server ipgate1), `10.8.0.0/24` = OpenVPN
@@ -144,6 +149,16 @@ Bezugsquelle: `dragino.com/downloads/…/LoRa_Gateway/DLOS8/Firmware/Release/`
 | `heissa/ttn_register.py` | OTAA-Gerät bei TTN anlegen (IS → JS → NS → AS) |
 | `devices/README.md` | Endgeräte, Schlüssel-Herkunft, AT-Kommandos |
 | `devices/trackerd.js` | Offizieller TrackerD-Decoder (TTN-Device-Repository) |
+| `TODO.md` | Wiederaufsetzpunkt: Zustand, Fallen, offene Punkte |
+| `dell/dell_chirpstack.sh` | Lokalen Netzserver auf 192.168.5.23 aufsetzen |
+| `dell/cs_setup.py` | Gateway, Anwendung, Profil und LA66 (ABP) anlegen |
+| `dell/cs_classc.py` | Geräteprofil auf Class C |
+| `dell/cs_reactivate.py` | ABP-Aktivierung erneuern, damit Class C greift |
+| `dell/cs_fix_profile.py` | Region/MAC-Version über die Enum-Konstanten geradeziehen |
+| `dell/dragino_rx.py` | LoRa-Uplink → MQTT-Topic |
+| `dell/crisis_bcast.py` | MQTT-Topic `crisis` → Downlink an alle Geräte |
+| `laptop/dragino.py` | Nachricht über den LA66 funken |
+| `hosts_block.sh` | Gegenseitige `/etc/hosts`-Einträge über ULAs |
 
 ## EU868-Kanalplan
 
@@ -160,6 +175,42 @@ Bezugsquelle: `dragino.com/downloads/…/LoRa_Gateway/DLOS8/Firmware/Release/`
 
 Dazu `chan_Lora_std` (868.3 MHz, 250 kHz, SF7) und `chan_FSK` (868.8 MHz).
 Radio 0 liegt auf 867.5 MHz, Radio 1 auf 868.5 MHz; nur Radio 0 sendet.
+
+## Krisenpfad und Notfallkanal
+
+Seit 14.08.2026 hängt am Gateway ein zweiter, vollständig lokaler Weg. Der
+Einstieg für alles Weitere ist **[TODO.md](TODO.md)** — dort stehen Zustand,
+Fallen und offene Punkte.
+
+```
+   LA66 am USB des Notebooks
+            |
+            v
+   Dragino DLOS8N  --server1-->  TTN  -->  heissa.de (wagodb + Traccar)
+            |
+            +-----server2----->  192.168.5.23  (LAN, 1,2 ms)
+                                 ChirpStack + mosquitto
+                                   |
+                                   +-- dragino-rx.service   LoRa  -> MQTT
+                                   +-- crisis-bcast.service MQTT  -> LoRa
+```
+
+Der lokale Weg braucht **weder Internet noch WireGuard noch ipgate1**. Er läuft
+im Normalbetrieb dauernd mit und ist damit dauernd getestet — ein Umschalten im
+Ernstfall gibt es bewusst nicht.
+
+| Richtung | Aufruf |
+|---|---|
+| Berg → Heimserver | `dragino.py wetter/berg "Schneefall"` |
+| Heimserver → alle Geräte | `mosquitto_pub -h dell -t crisis -m "Lawinenwarnung"` |
+
+Der LA66 läuft als **Class C** und lauscht dauerhaft auf 869.525 MHz, empfängt
+einen Broadcast also ohne vorher selbst zu senden. Als Class-A-Gerät wäre er
+fast nur Sender gewesen.
+
+Feste Adressen über ULAs `fd00::/64` — die GUAs aus dem FritzBox-Präfix
+wechseln mit jedem Provider-Wechsel, ULAs nie. Über IPv6 sind die getrennten
+IPv4-Netze 192.168.5.x und 192.168.178.x dasselbe Segment.
 
 ## Endgeräte, Datenhaltung und Traccar
 

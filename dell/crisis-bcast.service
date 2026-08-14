@@ -1,0 +1,18 @@
+[Unit]
+Description=Krisen-Broadcast: MQTT-Topic crisis an alle LoRaWAN-Geraete
+Documentation=https://github.com/gerontec/TTN
+After=network-online.target mosquitto.service chirpstack.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=gh
+Group=gh
+# eigene Umgebung, weil chirpstack-api nicht als Systempaket vorliegt
+ExecStart=/home/gh/.venv-chirpstack/bin/python /home/gh/python/crisis_bcast.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

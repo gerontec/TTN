@@ -1,0 +1,18 @@
+[Unit]
+Description=LoRa-Notfallkanal: Uplinks vom LA66 auf MQTT legen
+Documentation=https://github.com/gerontec/TTN
+After=network-online.target mosquitto.service chirpstack.service
+Wants=network-online.target
+# Der Kanal soll gerade dann noch da sein, wenn sonst nichts mehr geht.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=gh
+Group=gh
+ExecStart=/usr/bin/python3 /home/gh/python/dragino_rx.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
