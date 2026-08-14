@@ -9,7 +9,7 @@ StartLimitIntervalSec=0
 Type=simple
 User=gh
 Group=gh
-ExecStart=/usr/bin/python3 /home/gh/python/lora_bcast.py
+ExecStart=/usr/bin/python3 /home/gh/python/lora_bcast.py --warten
 Restart=always
 RestartSec=10
 

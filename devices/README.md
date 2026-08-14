@@ -219,8 +219,21 @@ speichern — kann eine Filterregel nie an vergangenen Daten prüfen. So dagegen
 schon, ohne ein einziges Byte zu senden:
 
 ```
-./lora_bcast.py --trocken --seit 0
+./lora_bcast.py --trocken --seit 0                        # auf dem dell
+./lora_bcast.py --trocken --seit 0 --db-host 192.168.5.23 # von woanders
 ```
+
+Beide Dienste sind für den dell gebaut, wo Broker und MariaDB lokal stehen —
+die Vorgabe ist deshalb `127.0.0.1`. Von einem anderen Rechner aus zeigt man
+mit `--db-host`/`--broker` bzw. `LORA_DB_HOST`/`LORA_BROKER` hin; ohne das
+bricht `lora_bcast.py` mit einer Erklärung ab statt mit einem Traceback und
+verweist für den Handbetrieb auf `laptop/crisis_client.py`.
+
+Ein Detail, das zweimal falsch war, bevor es stimmte: ob auf die Datenbank
+gewartet oder abgebrochen wird, entscheidet der ausdrückliche Schalter
+`--warten` (den nur die systemd-Unit setzt) — **nicht** `isatty()`. In einer
+Pipe oder unter `nohup` ist das Terminal weg, und dann hängt der Aufruf still
+in einer Warteschleife, statt den Fehler zu zeigen.
 
 Ein Detail im Schema, das leicht in die falsche Richtung geht: es gibt
 **keinen** eindeutigen Schlüssel auf `(dev_eui, f_cnt)`. Der LA66 fängt nach
@@ -256,6 +269,20 @@ als Position weiterzugeben wäre schlimmer als gar keine, deshalb steht dann
 ausdrücklich **kein Fix** im Text — aber nur, wenn ein Alarm anliegt. Ohne
 beides geht gar nichts hinaus: eine Meldung "kein Fix, kein Alarm" bindet
 Sendezeit, ohne etwas mitzuteilen.
+
+**"kein Fix" heißt nicht "kein Positionsfeld".** Der TrackerD wechselt den
+Port: liegt nur ein Alarm an, schickt er drei Byte auf **fPort 7** statt
+fünfzehn auf fPort 2.
+
+```
+fPort 2   00000000000000004dc920016e0143   Position (0/0), Alarm, Feuchte, Temperatur
+fPort 7   4dc420                           Alarm + Batterie, sonst nichts
+```
+
+In der fPort-7-Meldung steht überhaupt keine Position — das ist kein
+fehlender Satellitenempfang und darf auch nicht so aussehen. Der Filter
+schreibt "kein Fix" deshalb nur, wenn der Rahmen ein Positionsfeld führt und
+es 0/0 ist; auf fPort 7 heißt es schlicht `TrackerD ALARM -106dBm`.
 
 Nebenwirkung, bewusst so belassen: `crisis_bcast` reiht bei jedem Rundruf
 *alle* Geräte ein, der TrackerD bekommt seine eigene Meldung also als Downlink

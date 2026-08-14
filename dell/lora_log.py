@@ -13,6 +13,7 @@ Filterregel nie an vergangenen Daten pruefen.
 import base64
 import json
 import logging
+import os
 import sys
 import time
 from datetime import datetime
@@ -20,9 +21,12 @@ from datetime import datetime
 import paho.mqtt.client as mqtt
 import pymysql
 
-BROKER = "127.0.0.1"
-DB = dict(host="127.0.0.1", user="gh", password="a12345", database="wagodb",
-          charset="utf8mb4", autocommit=True)
+# Vorgabe 127.0.0.1, weil der Dienst auf dem dell laeuft. Von woanders aus
+# zeigt man mit LORA_BROKER/LORA_DB_HOST auf den dell (192.168.5.23).
+BROKER = os.environ.get("LORA_BROKER", "127.0.0.1")
+DB = dict(host=os.environ.get("LORA_DB_HOST", "127.0.0.1"),
+          user="gh", password="a12345", database="wagodb",
+          charset="utf8mb4", autocommit=True, connect_timeout=5)
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(message)s",
