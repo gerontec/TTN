@@ -199,17 +199,23 @@ Uplinks des TrackerD und legt jeden als knappen Satz auf `crisis` — von dort
 übernimmt `crisis_bcast.py` und verteilt ihn an alle LoRaWAN-Geräte.
 
 ```
-TrackerD 47.6791,11.5793 ALARM 4.05V
-TrackerD kein Fix 40C
+TrackerD kein Fix ALARM 34.9C 36% 3.56V STILL     45 Byte
+TrackerD 47.6791,11.5793 ALARM 21.3C 48% 4.05V    46 Byte
 ```
 
-Zwei Entscheidungen stecken darin. Der Text bleibt **unter 49 Byte**, damit
-`crisis_bcast` ihn nicht stückeln muss: jedes Stück kostet bei SF12 rund eine
-Sekunde Sendezeit, und zwar pro Empfänger — bei 1 % Duty Cycle ist das der
-Unterschied zwischen "geht sofort raus" und "Gateway sendet stundenlang nach".
-Und ohne Satellitenfix meldet der TrackerD `Latitude`/`Longitude` als `0.0`;
-das als Position weiterzugeben wäre schlimmer als gar keine, deshalb steht
-dann ausdrücklich **kein Fix** im Text.
+Der Text bleibt **unter 49 Byte**, damit `crisis_bcast` ihn nicht stückeln
+muss: jedes Stück kostet bei SF12 rund eine Sekunde Sendezeit, und zwar pro
+Empfänger — bei 1 % Duty Cycle ist das der Unterschied zwischen "geht sofort
+raus" und "Gateway sendet stundenlang nach". Statt Felder fest wegzulassen,
+stehen sie nach Wichtigkeit sortiert (Position, Alarm, Temperatur, Feuchte,
+Batterie, Bewegung) und werden angehängt, solange noch Platz ist. Was hinten
+abfällt, fällt in dem Uplink ab, in dem es am wenigsten fehlt.
+
+Zwei Feinheiten. Ohne Satellitenfix meldet der TrackerD `Latitude`/`Longitude`
+als `0.0`; das als Position weiterzugeben wäre schlimmer als gar keine, deshalb
+steht dann ausdrücklich **kein Fix** im Text. Und die Batteriespannung gibt der
+Decoder auf fPort 2 überhaupt nicht heraus — sie wird aus Byte 8/9 des Rahmens
+gerechnet, ohne die oberen zwei Bit (Alarm- und Statusflagge).
 
 Nebenwirkung, bewusst so belassen: `crisis_bcast` reiht bei jedem Rundruf
 *alle* Geräte ein, der TrackerD bekommt seine eigene Meldung also als Downlink

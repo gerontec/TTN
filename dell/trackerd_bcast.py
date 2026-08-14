@@ -11,6 +11,7 @@ Stueck kostet bei SF12 gut eine Sekunde Sendezeit — pro Empfaenger. Der Text
 bleibt deshalb unter einem Stueck. Bei 1 % Duty Cycle ist das die Grenze
 zwischen "geht raus" und "Gateway sendet stundenlang nach".
 """
+import base64
 import json
 import logging
 import sys
@@ -30,27 +31,58 @@ logging.basicConfig(level=logging.INFO,
 log = logging.getLogger("trackerd_bcast")
 
 
-def satz(obj, port):
-    """Knapper Text aus dem, was der Codec hergibt — leer, wenn nichts taugt."""
-    teile = ["TrackerD"]
+def batterie(obj, raw):
+    """Spannung in Volt — der Codec gibt sie auf fPort 2 nicht heraus.
+
+    Byte 8/9 tragen sie in Millivolt, die oberen zwei Bit sind Alarm- und
+    Statusflagge und muessen weg."""
+    bat = obj.get("BatV")
+    if isinstance(bat, (int, float)) and bat:
+        return bat
+    if len(raw) >= 10:
+        mv = ((raw[8] & 0x3F) << 8) | raw[9]
+        if 2000 < mv < 5000:
+            return mv / 1000
+    return None
+
+
+def satz(obj, port, raw=b""):
+    """Knapper Text aus allem, was der Uplink hergibt.
+
+    Die Felder stehen nach Wichtigkeit und werden nur angehaengt, solange sie
+    noch in ein Stueck passen — so bleibt der Rundruf bei einem Downlink je
+    Empfaenger, egal wie viel das Geraet gerade meldet."""
     lat, lon = obj.get("Latitude"), obj.get("Longitude")
+    tem, hum = obj.get("Tem"), obj.get("Hum")
+    bat = batterie(obj, raw)
+    alarm = str(obj.get("ALARM_status", "")).upper() in ("TRUE", "1", "ALARM")
+
+    kandidaten = []
     if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
         # Ohne Fix meldet der TrackerD 0/0 — das als Position weiterzugeben
         # waere schlimmer als gar keine, deshalb ausdruecklich benannt.
-        teile.append(f"{lat:.4f},{lon:.4f}" if (lat or lon) else "kein Fix")
-    if str(obj.get("ALARM_status", "")).upper() in ("TRUE", "1", "ALARM"):
-        teile.append("ALARM")
-    bat = obj.get("BatV")
-    if isinstance(bat, (int, float)):
-        teile.append(f"{bat:.2f}V")
-    tem = obj.get("Tem")
+        kandidaten.append(f"{lat:.4f},{lon:.4f}" if (lat or lon) else "kein Fix")
+    if alarm:
+        kandidaten.append("ALARM")
     if isinstance(tem, (int, float)):
-        teile.append(f"{tem:.0f}C")
-    if len(teile) == 1:
+        kandidaten.append(f"{tem:.1f}C")
+    if isinstance(hum, (int, float)):
+        kandidaten.append(f"{hum:.0f}%")
+    if bat:
+        kandidaten.append(f"{bat:.2f}V")
+    if obj.get("Transport"):
+        kandidaten.append(str(obj["Transport"]))
+    if not kandidaten:
         # Kein verwertbares Feld — dann wenigstens melden, dass er sich
         # geruehrt hat; der fPort sagt, was es war.
-        teile.append(f"fPort{port}")
-    return " ".join(teile)[:GRENZE]
+        kandidaten.append(f"fPort{port}")
+
+    text = "TrackerD"
+    for k in kandidaten:
+        if len(text) + 1 + len(k) > GRENZE:
+            break
+        text += " " + k
+    return text
 
 
 def on_connect(client, userdata, flags, rc, properties=None):
@@ -74,7 +106,8 @@ def on_message(client, userdata, m):
     obj = msg.get("object") or {}
     port = msg.get("fPort")
     rx = (msg.get("rxInfo") or [{}])[0]
-    text = satz(obj, port)
+    raw = base64.b64decode(msg.get("data", "") or "")
+    text = satz(obj, port, raw)
 
     client.publish(TOPIC, text, qos=1)
     log.info("-> crisis: %s (fPort %s, RSSI %s, SNR %s)",
