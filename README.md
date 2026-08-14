@@ -138,6 +138,12 @@ Bezugsquelle: `dragino.com/downloads/…/LoRa_Gateway/DLOS8/Firmware/Release/`
 | `heissa/chirpstack.toml` | ChirpStack (Secrets entfernt) |
 | `heissa/mosquitto.conf` | Broker-Listener |
 | `ipgate1/wg0.conf` | WG-Server 10.9.0.0/24 (Keys entfernt) |
+| `heissa/lora_bridge.py` | TTN-MQTT → wagodb + Traccar, mit Decoder-Portierung |
+| `heissa/lora-bridge.service` | systemd-Unit dazu |
+| `heissa/lora_schema.sql` | Tabellen `lora_uplinks` und `lora_joins` |
+| `heissa/ttn_register.py` | OTAA-Gerät bei TTN anlegen (IS → JS → NS → AS) |
+| `devices/README.md` | Endgeräte, Schlüssel-Herkunft, AT-Kommandos |
+| `devices/trackerd.js` | Offizieller TrackerD-Decoder (TTN-Device-Repository) |
 
 ## EU868-Kanalplan
 
@@ -154,3 +160,78 @@ Bezugsquelle: `dragino.com/downloads/…/LoRa_Gateway/DLOS8/Firmware/Release/`
 
 Dazu `chan_Lora_std` (868.3 MHz, 250 kHz, SF7) und `chan_FSK` (868.8 MHz).
 Radio 0 liegt auf 867.5 MHz, Radio 1 auf 868.5 MHz; nur Radio 0 sendet.
+
+## Endgeräte, Datenhaltung und Traccar
+
+Seit 14.08.2026 hängt an dem Gateway eine vollständige Verarbeitungskette.
+Details zu den Geräten in [`devices/README.md`](devices/README.md).
+
+```
+  TrackerD          LA66 USB-Adapter
+  A840414F1188076C  A8404117F18962E0
+        |                  |
+        +--------+---------+
+                 v
+        Dragino DLOS8N (Lenggries)
+                 |
+                 v
+        TTN eu1 / Anwendung lenggries-sensors
+                 |  MQTT über TLS :8883
+                 v
+        heissa.de — lora-bridge.service
+                 |
+        +--------+--------------+
+        v                       v
+  wagodb.lora_uplinks     Traccar :5055
+  wagodb.lora_joins       (OsmAnd-Protokoll)
+```
+
+Die Brücke dekodiert **selbst**, obwohl TTN das auch könnte. Damit landen die
+Werte auch dann in der Datenbank, wenn am Payload-Formatter in der Konsole
+jemand schraubt, und die Zeile bleibt vollständig, wenn TTN `decoded_payload`
+einmal nicht mitliefert.
+
+Zwei Ebenen in `lora_uplinks` mit Absicht: `raw` hält die komplette
+TTN-Nachricht, damit auch Felder erhalten bleiben, an die beim Anlegen niemand
+gedacht hat; die Einzelspalten daneben sind nur Spiegel der häufig gebrauchten
+Werte, damit Grafana und SQL nicht jedes Mal JSON auspacken müssen.
+
+Ein Uplink kommt über mehrere Gateways herein — für die Funkspalten wird das
+mit dem stärksten Signal genommen.
+
+### Stolperstellen
+
+* **`f_cnt` fehlt bei 0.** TTN lässt Nullwerte im JSON weg. Als `NULL`
+  gespeichert greift der `UNIQUE`-Index nicht (NULL ist in MySQL nie gleich
+  NULL), und jeder Neustart der Brücke schriebe den ersten Uplink nach einem
+  Join erneut. Die Brücke setzt deshalb `f_cnt or 0`.
+* **Decoder gehört zum Gerät, nicht zum fPort.** Sonst liefe die
+  TrackerD-Logik auch über LA66-Payloads und lieferte Unsinn. Zuordnung über
+  `DECODERS` per DevEUI.
+* **MariaDB nur über den Unix-Socket.** `bind-address = 0.0.0.0`, aber ein
+  Grant auf `@'localhost'` gilt nicht für TCP nach `127.0.0.1` — von dort
+  kommt `1130 Host not allowed`.
+* **Traccar `uniqueId` = DevEUI in Kleinbuchstaben.** Die Brücke meldet über
+  das OsmAnd-Protokoll; `batt` erwartet Prozent, der TrackerD liefert Volt,
+  also linear über den nutzbaren Bereich einer 1S-Li-Ion-Zelle geschätzt —
+  der genaue Wert steht als `voltage` daneben.
+
+## Krisenfall: 192.168.5.23 übernimmt
+
+Der LA66 ist Notfallgerät: **fällt das Internet aus, ist er eines der wenigen
+Mittel, um vom Berg aus mit dem Heimserver `192.168.5.23` zu sprechen.** Damit
+das trägt, muss der Heimserver im Krisenfall die Rolle von heissa.de
+übernehmen — und **der dell wird dann WireGuard-Master**.
+
+Was dafür spricht, dass das funktionieren kann: **das Gateway erreicht
+`192.168.5.23` direkt** (gemessen 1,2 ms), ohne Umweg über Internet, ipgate1
+oder WireGuard. Der Pfad hängt an keiner Außenverbindung.
+
+Die harte Randbedingung: das Gateway hat nur **zwei Server-Slots**
+(`gateway.server1` = TTN, `gateway.server2` = ChirpStack auf heissa.de über
+10.9.0.10). Beide zeigen heute auf Ziele, die Internet brauchen. Im Krisenfall
+ist server1 ohnehin wertlos — TTN ist dann nicht erreichbar.
+
+Status: **geplant, noch nicht umgesetzt.** Offen sind lokaler Netzserver,
+Broker, Datenbank und Traccar auf dem dell sowie die Umschaltung des
+WG-Masters von ipgate1 auf den dell.

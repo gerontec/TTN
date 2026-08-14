@@ -1,0 +1,19 @@
+[Unit]
+Description=LoRaWAN-Bruecke TTN -> wagodb + Traccar
+Documentation=https://github.com/gerontec/TTN
+After=network-online.target mariadb.service traccar.service
+Wants=network-online.target
+# TTN trennt die MQTT-Sitzung gelegentlich; der Neustart soll deswegen nicht
+# irgendwann als "start-limit" aufgeben.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=gh
+Group=gh
+ExecStart=/usr/bin/python3 /home/gh/python/lora_bridge.py
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
