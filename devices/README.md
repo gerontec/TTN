@@ -192,30 +192,70 @@ Im Alarmzustand sendet er wiederholt (`send NO.%d Alarm data`, `alarm_state()`
 in `TrackerD.ino:1807`), im Abstand `sys.atdc` — einstellbar per `AT+ATDC`
 oder per Downlink (`TrackerD.ino:2627`).
 
-### TrackerD im Krisen-Rundruf
+### Erst speichern, dann filtern
 
-`dell/trackerd_bcast.py` (systemd: `trackerd-bcast.service`) hört auf die
-Uplinks des TrackerD und legt jeden als knappen Satz auf `crisis` — von dort
-übernimmt `crisis_bcast.py` und verteilt ihn an alle LoRaWAN-Geräte.
+Der Weg vom Uplink zum Rundruf ist seit 14.08.2026 in zwei Schritte geteilt,
+und die Reihenfolge ist der Punkt:
 
 ```
-TrackerD kein Fix ALARM 34.9C 36% 3.56V STILL     45 Byte
-TrackerD 47.6791,11.5793 ALARM 21.3C 48% 4.05V    46 Byte
+  ChirpStack ──MQTT──▶ lora_log.py ──▶ wagodb.loradevice   (alles, ungefiltert)
+                                            │
+                                            ▼
+                                       lora_bcast.py       (Filter)
+                                            │
+                                            ▼
+                                        MQTT crisis ──▶ crisis_bcast.py ──▶ alle Geräte
 ```
 
-Der Text bleibt **unter 49 Byte**, damit `crisis_bcast` ihn nicht stückeln
-muss: jedes Stück kostet bei SF12 rund eine Sekunde Sendezeit, und zwar pro
-Empfänger — bei 1 % Duty Cycle ist das der Unterschied zwischen "geht sofort
-raus" und "Gateway sendet stundenlang nach". Statt Felder fest wegzulassen,
-stehen sie nach Wichtigkeit sortiert (Position, Alarm, Temperatur, Feuchte,
-Batterie, Bewegung) und werden angehängt, solange noch Platz ist. Was hinten
-abfällt, fällt in dem Uplink ab, in dem es am wenigsten fehlt.
+**`dell/lora_log.py`** (`lora-log.service`) schreibt jedes Ereignis von
+`application/#` nach `wagodb.loradevice` — up, join, ack, txack, status, log.
+Was sich sinnvoll herausziehen lässt, steht in eigenen Spalten; der
+vollständige Rahmen bleibt zusätzlich als JSON in `raw`. Schema:
+`dell/loradevice.sql`.
 
-Zwei Feinheiten. Ohne Satellitenfix meldet der TrackerD `Latitude`/`Longitude`
-als `0.0`; das als Position weiterzugeben wäre schlimmer als gar keine, deshalb
-steht dann ausdrücklich **kein Fix** im Text. Und die Batteriespannung gibt der
-Decoder auf fPort 2 überhaupt nicht heraus — sie wird aus Byte 8/9 des Rahmens
-gerechnet, ohne die oberen zwei Bit (Alarm- und Statusflagge).
+**`dell/lora_bcast.py`** (`lora-bcast.service`) liest aus dieser Tabelle und
+entscheidet, was gesendet wird. Wer umgekehrt vorgeht — erst filtern, dann
+speichern — kann eine Filterregel nie an vergangenen Daten prüfen. So dagegen
+schon, ohne ein einziges Byte zu senden:
+
+```
+./lora_bcast.py --trocken --seit 0
+```
+
+Ein Detail im Schema, das leicht in die falsche Richtung geht: es gibt
+**keinen** eindeutigen Schlüssel auf `(dev_eui, f_cnt)`. Der LA66 fängt nach
+einem Neustart wieder bei 0 an; ein Unique würde die neuen Uplinks
+stillschweigend verwerfen. In einem Rohspeicher ist eine Doublette das
+kleinere Übel als eine Lücke.
+
+### Was im Rundruf steht
+
+Alarmknopf, GPS-Position, Empfangspegel. Sonst nichts.
+
+```
+TrackerD ALARM 47.67912,11.57934 -90dBm    39 Byte
+TrackerD ALARM kein Fix -90dBm             30 Byte
+TrackerD 47.67912,11.57934 -118dBm         34 Byte
+kein Alarm, kein Fix                       → es geht nichts hinaus
+```
+
+Temperatur, Feuchte, Batterie und Bewegungszustand bleiben in der Datenbank.
+Im Krisenfall zählt, wo jemand ist und ob er gedrückt hat; jedes weitere Byte
+kostet Sendezeit bei **jedem** Empfänger. Aus demselben Grund bleibt der Text
+unter 49 Byte — darüber stückelt `crisis_bcast`, und jedes Stück kostet bei
+SF12 rund eine Sekunde pro Empfänger. Bei 1 % Duty Cycle ist das der
+Unterschied zwischen "geht sofort raus" und "Gateway sendet stundenlang nach".
+
+Der **RSSI** ist der des Uplinks am Gateway und steht mit im Text, damit die
+Empfänger einschätzen können, wie belastbar die Meldung ist: −90 dBm ist
+solide, jenseits von −115 dBm reißt die Verbindung gleich ab. Dann ist das
+Ausbleiben der nächsten Meldung eine Funklücke — und keine Entwarnung.
+
+Ohne Satellitenfix meldet der TrackerD `Latitude`/`Longitude` als `0.0`. Das
+als Position weiterzugeben wäre schlimmer als gar keine, deshalb steht dann
+ausdrücklich **kein Fix** im Text — aber nur, wenn ein Alarm anliegt. Ohne
+beides geht gar nichts hinaus: eine Meldung "kein Fix, kein Alarm" bindet
+Sendezeit, ohne etwas mitzuteilen.
 
 Nebenwirkung, bewusst so belassen: `crisis_bcast` reiht bei jedem Rundruf
 *alle* Geräte ein, der TrackerD bekommt seine eigene Meldung also als Downlink
