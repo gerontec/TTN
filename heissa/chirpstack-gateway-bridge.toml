@@ -1,0 +1,30 @@
+# ChirpStack Gateway Bridge — Semtech UDP -> MQTT
+#
+# Lauscht ausschliesslich auf der WireGuard-Adresse (10.9.0.10), damit UDP 1700
+# nicht oeffentlich offen steht. Das Dragino DLOS8N (10.9.0.9) schickt seine
+# Pakete ueber ipgate1 hierher.
+#
+# Topic-Prefix "eu868" und marshaler "json" muessen zu /etc/chirpstack/chirpstack.toml
+# passen: dort ist json=true gesetzt und ChirpStack abonniert
+#   $share/chirpstack/eu868/gateway/+/event/+
+
+[backend]
+type="semtech_udp"
+
+  [backend.semtech_udp]
+  udp_bind = "10.9.0.10:1700"
+
+[integration]
+marshaler="json"
+
+  [integration.mqtt]
+  event_topic_template="eu868/gateway/{{ .GatewayID }}/event/{{ .EventType }}"
+  command_topic_template="eu868/gateway/{{ .GatewayID }}/command/#"
+
+    [integration.mqtt.auth]
+    type="generic"
+
+      [integration.mqtt.auth.generic]
+      server="tcp://127.0.0.1:1883"
+      username=""
+      password=""
