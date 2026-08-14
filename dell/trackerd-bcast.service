@@ -1,0 +1,17 @@
+[Unit]
+Description=TrackerD-Uplinks in den Krisen-Rundruf legen
+Documentation=https://github.com/gerontec/TTN
+After=network-online.target mosquitto.service chirpstack.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=gh
+Group=gh
+ExecStart=/usr/bin/python3 /home/gh/python/trackerd_bcast.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

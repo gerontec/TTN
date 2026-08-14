@@ -1,0 +1,6 @@
+# Dragino TrackerD (CH9102/CH343 am USB-C, 1a86:55d4).
+# ModemManager probt den Port als Modem, toggelt dabei DTR/RTS und wirft den
+# ESP32 in den Reset — der Port verschwindet nach rund 1,5 s wieder.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d4", ENV{ID_MM_DEVICE_IGNORE}="1", ENV{ID_MM_PORT_IGNORE}="1", MODE="0660", GROUP="dialout", SYMLINK+="trackerd"
+# LA66 USB-Adapter (CH340) gleich mit, aus demselben Grund.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", ENV{ID_MM_DEVICE_IGNORE}="1", ENV{ID_MM_PORT_IGNORE}="1", MODE="0660", GROUP="dialout"
