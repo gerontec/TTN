@@ -151,11 +151,32 @@ else if (sys.sleep_flag == 1) {
 }
 ```
 
-Wer also „gut lange" drückt, schaltet nicht den Alarm ein, sondern aus — und
-nimmt den Bewegungssensor gleich mit. Danach schweigt das Gerät vollständig,
-auch auf Gateway-Ebene, denn Bewegung ist der Auslöser der regulären
-Positionsmeldungen (`Transport: "STILL"` im dekodierten Uplink). Da kommt es
-von selbst nicht mehr heraus; zuverlässig hilft nur ein harter Reset über USB.
+Wer in diesem Fenster loslässt, schaltet den Alarm also ab statt ein — und
+nimmt den Bewegungssensor gleich mit, der der Auslöser der regulären
+Positionsmeldungen ist (`Transport: "STILL"` im dekodierten Uplink). Aus
+diesem Zustand hilft zuverlässig nur ein harter Reset über USB.
+
+**Vorsicht bei der Diagnose:** Ausbleibende Uplinks beweisen das noch nicht.
+Beim Test am 14.08.2026 blieb es nach dem Knopfdruck rund 2½ Minuten
+vollständig still — auch auf Gateway-Ebene — und der Alarm kam dann doch. Wer
+zu früh urteilt, hält eine normale Sendepause für einen abgeschalteten Sensor.
+
+### Wie der Alarm im Rahmen aussieht
+
+Zwei Uplinks desselben Geräts, fPort 2, 15 Byte, einmal ruhig und einmal
+ausgelöst:
+
+```
+ruhig  00000000000000000df62001640179   fCnt 2, RSSI -103
+Alarm  00000000000000004de6200167015d   fCnt 3, RSSI  -90
+                       ^^
+```
+
+Es ist ein einziges Bit: **Byte 8, Bit 6** (`bytes[8] & 0x40` im Decoder).
+Der Rest des Unterschieds ist Messrauschen — Byte 8/9 tragen ohne die oberen
+zwei Bits die Batteriespannung (`0x0df6` = 3574 mV), Byte 11/12 die Feuchte
+(35,6 → 35,9 %), Byte 13/14 die Temperatur (37,7 → 34,9 °C). Die ersten acht
+Byte sind Breite und Länge, hier mangels Fix durchgehend null.
 
 Zwei weitere Eigenheiten, die im Datenblatt fehlen:
 
