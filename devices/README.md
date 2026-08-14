@@ -198,7 +198,8 @@ Der Weg vom Uplink zum Rundruf ist seit 14.08.2026 in zwei Schritte geteilt,
 und die Reihenfolge ist der Punkt:
 
 ```
-  ChirpStack ──MQTT──▶ lora_log.py ──▶ wagodb.loradevice   (alles, ungefiltert)
+  ChirpStack ──MQTT──▶ lora_log.py ──▶ wagodb.loradevice   (Geräteereignisse)
+       Chat  ──MQTT──▶     "      ──▶ wagodb.lorachat     (Textebene)
                                             │
                                             ▼
                                        lora_bcast.py       (Filter)
@@ -213,7 +214,35 @@ Was sich sinnvoll herausziehen lässt, steht in eigenen Spalten; der
 vollständige Rahmen bleibt zusätzlich als JSON in `raw`. Schema:
 `dell/loradevice.sql`.
 
-**`dell/lora_bcast.py`** (`lora-bcast.service`) liest aus dieser Tabelle und
+Derselbe Dienst schreibt die **Textebene** nach `wagodb.lorachat`
+(`dell/lorachat.sql`) — alles, was nicht `application/#` ist: der Rundruf auf
+`crisis`, die Betriebsmeldungen auf `…/status` und das, was `dragino_rx.py`
+aus einem hereingefunkten LoRa-Text zusammensetzt.
+
+| richtung | woran erkannt |
+|---|---|
+| `raus` | Topic ist `crisis` |
+| `status` | Topic endet auf `/status` |
+| `rein` | alles übrige |
+
+Die Erkennung geht bewusst über den Rest-Fall, nicht über eine Topic-Liste:
+`dragino_rx.py` veröffentlicht unter dem Topic, das der Absender im Funkspruch
+selbst gewählt hat — das steht nirgends vorher fest.
+
+Zwei Tabellen statt einer, weil es zwei Dinge sind: `loradevice` sagt, was ein
+Gerät gesendet hat (DevEUI, fPort, Zählerstand), `lorachat` sagt, was Menschen
+einander mitgeteilt haben. In eine Tabelle gezwungen bliebe dauerhaft die
+Hälfte der Spalten leer.
+
+Ein Detail, das sonst still Doubletten erzeugt: aufbewahrte Nachrichten
+(`retain`) liefert der Broker jedem neuen Abonnenten nach. Das ist ein Abbild
+des Zustands, kein neues Ereignis — sonst stünde nach jedem Neustart des
+Dienstes derselbe Satz noch einmal in der Tabelle. Sie werden übersprungen.
+
+Die Gateway-Ebene (`eu868/#`) bleibt draußen: dieselben Uplinks noch einmal,
+nur unentschlüsselt, dazu alle 30 s Statistik.
+
+**`dell/lora_bcast.py`** (`lora-bcast.service`) liest aus `loradevice` und
 entscheidet, was gesendet wird. Wer umgekehrt vorgeht — erst filtern, dann
 speichern — kann eine Filterregel nie an vergangenen Daten prüfen. So dagegen
 schon, ohne ein einziges Byte zu senden:

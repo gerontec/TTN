@@ -38,6 +38,9 @@ SQL = """INSERT INTO loradevice
   confirmed, dr, frequency, rssi, snr, gateway_id, payload_hex, decoded, raw)
  VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
 
+SQL_CHAT = """INSERT INTO lorachat (ts, richtung, topic, text, meta)
+ VALUES (%s,%s,%s,%s,%s)"""
+
 conn = None
 
 
@@ -96,15 +99,72 @@ def zerlege(topic, msg):
     )
 
 
+def richtung(topic):
+    """`crisis` geht hinaus, `…/status` ist Betriebsmeldung, der Rest kam herein.
+
+    Was `dragino_rx.py` aus einem LoRa-Text zusammensetzt, veroeffentlicht es
+    unter dem Topic, das der Absender selbst gewaehlt hat — deshalb laesst sich
+    "hereingekommen" nicht an einer festen Topic-Liste erkennen, sondern nur
+    daran, dass es keines der beiden anderen ist."""
+    if topic == "crisis":
+        return "raus"
+    if topic.endswith("/status"):
+        return "status"
+    return "rein"
+
+
+def schreibe(sql, werte, was):
+    for versuch in (1, 2):
+        try:
+            with db().cursor() as cur:
+                cur.execute(sql, werte)
+            log.info("%s", was)
+            return
+        except pymysql.Error as e:
+            global conn
+            conn = None
+            if versuch == 2:
+                # Lieber laut scheitern als still verlieren: die Zeile steht
+                # dann wenigstens im Journal.
+                log.error("nicht gespeichert (%s): %s", e, was)
+            else:
+                time.sleep(0.5)
+
+
 def on_connect(client, userdata, flags, rc, properties=None):
     if rc != 0:
         log.error("Broker lehnt ab: %s", rc)
         return
-    log.info("verbunden, schreibe alles von application/# nach wagodb.loradevice")
-    client.subscribe("application/#", qos=1)
+    log.info("verbunden: Geraeteereignisse -> loradevice, Chat -> lorachat")
+    client.subscribe("#", qos=1)
 
 
 def on_message(client, userdata, m):
+    # Gateway-Ebene bleibt draussen: dieselben Uplinks noch einmal, nur
+    # unentschluesselt, dazu alle 30 s Statistik.
+    if m.topic.startswith("eu868/"):
+        return
+
+    # --- Chat -----------------------------------------------------------
+    if not m.topic.startswith("application/"):
+        # Beim Verbinden liefert der Broker seine aufbewahrten Nachrichten
+        # nach. Das ist ein Abbild des Zustands, kein neues Ereignis — sonst
+        # stuende nach jedem Neustart derselbe Satz noch einmal in der Tabelle.
+        if m.retain:
+            return
+        text = m.payload.decode("utf-8", "replace")
+        meta = None
+        if text.startswith("{"):
+            try:
+                json.loads(text)
+                meta, text = text, None
+            except ValueError:
+                pass
+        schreibe(SQL_CHAT, (datetime.now(), richtung(m.topic), m.topic, text, meta),
+                 f"chat {richtung(m.topic)} {m.topic}: {(text or meta or '')[:80]}")
+        return
+
+    # --- Geraeteereignisse ----------------------------------------------
     try:
         msg = json.loads(m.payload)
     except ValueError:
@@ -113,22 +173,8 @@ def on_message(client, userdata, m):
         return
 
     werte = zerlege(m.topic, msg)
-    for versuch in (1, 2):
-        try:
-            with db().cursor() as cur:
-                cur.execute(SQL, werte)
-            log.info("%s %s fPort %s fCnt %s", werte[2], werte[5] or werte[4],
-                     werte[7], werte[8])
-            return
-        except pymysql.Error as e:
-            global conn
-            conn = None
-            if versuch == 2:
-                # Lieber laut scheitern als still verlieren: die Zeile steht
-                # dann wenigstens im Journal.
-                log.error("nicht gespeichert (%s): %s", e, werte[3])
-            else:
-                time.sleep(0.5)
+    schreibe(SQL, werte,
+             f"{werte[2]} {werte[5] or werte[4]} fPort {werte[7]} fCnt {werte[8]}")
 
 
 def main():
