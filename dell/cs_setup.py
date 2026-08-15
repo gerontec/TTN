@@ -50,6 +50,13 @@ def existing(label, fn):
         if e.code() == grpc.StatusCode.ALREADY_EXISTS:
             print(f"[da]  {label} existiert bereits")
             return None, True
+        # Beim Gateway meldet ChirpStack den Doppeleintrag nicht als
+        # ALREADY_EXISTS, sondern reicht den Postgres-Fehler als INTERNAL
+        # durch. Inhaltlich ist es derselbe Fall.
+        if (e.code() == grpc.StatusCode.INTERNAL
+                and "duplicate key value" in (e.details() or "")):
+            print(f"[da]  {label} existiert bereits (duplicate key)")
+            return None, True
         raise
 
 
