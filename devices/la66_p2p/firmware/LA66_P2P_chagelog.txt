@@ -1,0 +1,30 @@
+v1.2.4 Firmware
+
+-- 1.Add the Bootloader.
+
+
+v1.2.3 Firmware
+
+-- 1.Added AT+DEBUG command to display or hide detailed printing information.
+
+
+v1.2.1 Firmware
+
+-- 1.Fix the issue that AT+CRC cannot be set.
+
+
+v1.2 Firmware
+
+-- 1.Fix the bug that the first byte of AT+RECV is lost.
+-- 2.Add sending AT will get OK reply.
+
+
+v1.1 Firmware
+
+-- 1.Add AT+RXDAFORM command £ºReceived data printing format, 0 is HEX format,1 is string form. (Default is 0)
+-- 2.Add AT+WAITTIME command.£ºWhen using AT+RXMODE to reply, wait for n seconds before replying. (Default is 1 second).
+
+
+v1.0 Firmware
+
+-- Update LA66_P2P version 1.0.
