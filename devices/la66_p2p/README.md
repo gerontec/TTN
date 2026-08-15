@@ -111,8 +111,9 @@ und bei SF7 in 230 Byte.
 
 ## Gegenstelle EByte E22
 
-Am zweiten Port (`/dev/ttyUSB1`, CH340) hängt ein E22-Modul (900-MHz-Variante,
-Frequenz = 850.125 MHz + Kanal). Für den Test gegen den LA66 mit
+Am zweiten Port (`/dev/ttyUSB1`, CH340) hängt ein **E22-900T22U** (per
+`AT+DEVTYPE=?` ausgelesen, Firmware `7434-2-11`; Frequenz = 850.125 MHz +
+Kanal). Für den Test gegen den LA66 mit
 [`../../laptop/e22.py`](../../laptop/e22.py) gesetzt:
 
 ```bash
@@ -126,9 +127,16 @@ Ergebnis `FF FF 00 62 E2 12 00 00 00` — **868.125 MHz**, 2.4 kbps, transparent
 
 Zwei Punkte, die den Test noch kosten können:
 
-* Der E22 antwortet auf `C1`-Kommandos nur im **Konfigurationsmodus**
-  (M0=0, M1=1). Zum Senden und Empfangen muss er auf M0=0, M1=0 stehen —
-  je nach Adapter ein DIP-Schalter oder eine Lötbrücke.
+* Der E22 antwortet auf `C1`-Kommandos nur im **Konfigurationsmodus**. Der
+  T22U-Stick schaltet den Modus über seinen **Taster**: länger als 1,5 s
+  drücken, loslassen. Die LED sagt, wo er steht — **rot = Konfiguration,
+  grün = Übertragung** (grün blinkend: Daten laufen). Per Kommando geht das
+  bei Firmware `7434-2-11` nicht: `AT+SWITCH` und `AT+MODE` gibt es erst ab
+  `7453-0-2x`, dieser Stand antwortet darauf mit `FF FF FF`.
+* **Finger weg von `AT+IAP`** — auch von `AT+IAP=?`. Das Kommando kennt keine
+  Abfrageform, es wirft den Stick sofort in den Firmware-Update-Modus, in dem
+  er nur noch Müll antwortet. Ein USB-Reset holt ihn da nicht heraus, nur
+  Ausstecken und wieder Einstecken.
 * EByte gibt statt SF/BW nur eine „Air Rate" her. 2.4k ist nach Datenblatt-Lesart
   SF10/BW125, verbürgt ist das nicht. Wenn nichts ankommt: auf der LA66-Seite
   `AT+SF` von 12 abwärts durchprobieren, der Rest der Parameter
