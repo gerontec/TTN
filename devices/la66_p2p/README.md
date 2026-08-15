@@ -111,8 +111,14 @@ BOOT↔RX-Brücke.
 Die LoRaWAN-Konfiguration des Sticks vor dem Umbau steht in
 [`la66_lorawan_v1.3_cfg.txt`](la66_lorawan_v1.3_cfg.txt) — Keys entfernt,
 DevEUI `A8 40 41 17 F1 89 62 E0`, ABP, DevAddr `018962E0`, Class C.
-Flashen löscht die Keys, für den Rückweg müssen sie aus ChirpStack neu
-gesetzt werden.
+
+**Die Keys überleben den Umbau.** Nach dem Round-Trip P2P → LoRaWAN → P2P →
+LoRaWAN standen DevEUI, AppEUI, AppKey, DevAddr, AppSKey und NwkSKey
+unverändert im `AT+CFG` — sie liegen in einem eigenen Konfigurationsbereich,
+den das Flashen der App bei `0x0800D000` nicht anfasst. Zurückgesetzt werden
+nur die Betriebsparameter: `ADR` 0→1, `DR` 0→5, `NJM` 0→1 (ABP wird wieder
+OTAA), `PNM` 0→1, Frame-Counter auf 0. Die muss man nach dem Rückweg also neu
+setzen, die Keys nicht.
 
 ## AT-Befehle der P2P-Firmware
 
@@ -282,3 +288,63 @@ passendes SF/BW verwendet werden. Die Nutzlast steht base64-kodiert im
 `rxpk.data` des Semtech-UDP-Protokolls — man muss sie also **neben** der
 LoRaWAN-Kette abgreifen, nicht dahinter. Mit Syncword `0x12` (privat) hört das
 Gateway dagegen nichts.
+
+## Firmware-Stand und der Bootloader
+
+Der Stick läuft mit **LoRaWAN v1.3** (`Image Version: v1.3`, Stack
+`DR-LWS-007`). Das ist laut Draginos Release-Liste der aktuelle Stand:
+
+| Release | Datum | Änderung |
+|---|---|---|
+| **v1.3** | 2024-01-03 | kompatibel mit neuerer ASR6601-Revision; AS923-DR2-Downlink-Limit bei `AT+DWELLT=1`; „Lora wireless upgrade program with bootload" |
+| v1.2 | 2023-05-08 | `AT+RX1WTO`, `AT+RX2WTO`, `AT+DECRYPT`, `AT+DISFCNTCHECK`, `AT+DISMACANS` |
+| v1.1 | 2022-09-07 | erste Veröffentlichung |
+
+Quelle: <https://github.com/dragino/LA66/releases>. Vorbehalt: Dragino verteilt
+die Binaries primär über Dropbox, dort kann ein Build liegen, der auf GitHub
+nie getaggt wurde — geprüft ist hier die Release-Liste, nicht der Dropbox-Ordner.
+
+**Der Bootloader hinkt dagegen eine Version hinterher:** unserer meldet
+`Dragino OTA bootloader EU868 v1.3`, aktuell ist laut Wiki **V1.4**
+(`LoRa_OTA_Bootloader_v1.4.bin`, liegt im OTA-Tool-Ordner). Der Unterschied ist
+laut Doku ausschließlich „support OTA configuration for T68DL" — für uns ohne
+Belang. Und ihn zu aktualisieren ginge nur über Weg B mit BOOT↔RX-Brücke, die
+an diesem Stick nie gegriffen hat. Also: liegen lassen.
+
+## TrackerD zurück auf LoRaWAN
+
+Gegenprobe nach dem ganzen Umflashen — funkt der TrackerD noch LoRaWAN?
+Zurückgeschaltet mit [`../trackerd_p2p/switch_app.py`](../trackerd_p2p/switch_app.py):
+
+```
+otadata[0] @0x0E000: ota_seq=1  gueltig
+otadata[1] @0x0F000: ota_seq=2  gueltig
+-> bootet app1 (P2P)
+$ ./switch_app.py lorawan
+Bootpartition = app0 (LoRaWAN).
+```
+
+Er bootet sauber in die Dragino-Firmware und sendet:
+
+```
+TrackerD ,v1.4.8   EU868   TDC:48000   BAT:4002 mV
+97261: EV_JOINING
+359870: TXMODE, freq=868500000, len=23, SF=7, BW=125, CR=4/5
+752992: EV_JOIN_TXCOMPLETE: no JoinAccept
+4835867: TXMODE, freq=868300000, len=23, SF=7, BW=125, CR=4/5
+5228987: EV_JOIN_TXCOMPLETE: no JoinAccept
+```
+
+Das Gateway hört die Join-Requests einwandfrei und reicht sie an beide Server
+weiter:
+
+```
+[MACINFO~][JOIN_REQ]:{"Size":23,"Rssi":-78,"snr":14,
+  "AppEUI":"A840410000000102","DevEUI":"A840414F1188076C"}
+[INFO~][PKTS][server-UP] received Join_Req from DevEui: A840414F1188076C
+```
+
+**Fazit:** Funk und Firmware des TrackerD sind unversehrt, das P2P-Experiment in
+app1 hat app0 nicht beschädigt. Was fehlt, ist der **JoinAccept** — der Ausfall
+liegt hinter dem Gateway auf der Netzserver-Seite (Gerät nicht registriert bzw.
+AppKey passt nicht), nicht am Gerät und nicht an der Funkstrecke.
