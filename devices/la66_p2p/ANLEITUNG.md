@@ -54,8 +54,24 @@ Neustart -- Ausgabe der neuen Firmware:
 `0x08000000` und würde den Bootloader überschreiben, auf dem dieser Weg
 aufsetzt — das Skript lehnt es deshalb ab.
 
-Zurück auf LoRaWAN geht über diesen Weg nicht: die LoRaWAN-Datei liegt hier nur
-als Kombi-Image mit Bootloader vor, dafür Weg B.
+Zurück auf LoRaWAN geht genauso — die LoRaWAN-Datei liegt zwar nur als
+Kombi-Image vor, aber [`la66_mode.py`](la66_mode.py) schneidet die App ab
+`0xD000` heraus und flasht sie über denselben Weg:
+
+```bash
+./la66_mode.py status      # welcher Modus läuft gerade?
+./la66_mode.py lorawan     # ~9 s
+./la66_mode.py p2p --apply-rf
+```
+
+`--apply-rf` setzt gleich die TrackerD-Parameter — **ein Flash setzt die
+Funkeinstellungen auf Werk zurück** (868.700 MHz, SF12).
+
+Das ist kein Dual-Boot, sondern jedes Mal ein Umflashen: der ASR6601 hat genau
+einen App-Bereich, und beide Dragino-Images sind fest auf `0x0800D000` gelinkt
+(Reset-Vektoren `0x0800F00D` bzw. `0x0800F30D` — absolute Adressen). Aus einem
+zweiten Slot gestartet liefen sie nicht. Der Wechsel kostet dafür nur fünf bis
+neun Sekunden.
 
 ## Weg B: Stick ohne Bootloader
 

@@ -208,3 +208,77 @@ Ergebnis: GEHOERT
 
 `54 52 41 43 4b 45 52 44` ist `TRACKERD`, das 32-Byte-Muster aus `AT+TXTEST`.
 RSSI −21 bis −22 dBm über wenige Zentimeter, ein Paket rund alle 200 ms.
+
+## Kein Dual-Boot — aber Umschalten in Sekunden
+
+Naheliegende Frage: beide Firmwares gleichzeitig vorhalten? Geht nicht. Der
+ASR6601 hat **einen** Applikationsbereich ab `0x0800D000` (davor der Bootloader,
+dahinter rund 204 KB Platz — beide Apps zusammen wären nur ~107 KB), und der
+Bootloader springt bedingungslos dorthin. Ein zweiter Slot brächte auch nichts:
+beide Dragino-Images sind **fest auf `0x0800D000` gelinkt**, ihre Reset-Vektoren
+zeigen absolut auf `0x0800F00D` (P2P) bzw. `0x0800F30D` (LoRaWAN). Von einer
+anderen Adresse gestartet laufen sie nicht, und ohne Quellen ist kein Re-Link
+möglich. Echtes Dual-Boot bräuchte einen eigenen Bootloader, der das gewählte
+Image bei jedem Start nach `0x0800D000` kopiert — viel Risiko, viel Flash-Verschleiß.
+
+Da der Wechsel über die AT-UART nur fünf bis neun Sekunden kostet, macht
+[`la66_mode.py`](la66_mode.py) stattdessen genau das:
+
+```bash
+./la66_mode.py status
+./la66_mode.py lorawan
+./la66_mode.py p2p --apply-rf
+```
+
+Der Modus wird am Boot-Banner erkannt (`LA66 P2P Firmware` gegen
+`Dragino LA66 Device`), und weil die LoRaWAN-Firmware nur als Kombi-Image
+vorliegt, schneidet das Skript die App ab `0xD000` heraus — dass das zulässig
+ist, ist nachgemessen: `…_withbootloder.bin[0xD000:]` ist byte-identisch
+(SHA-256) mit dem eigenständigen `…_application.bin`.
+
+Round-Trip verifiziert: P2P → LoRaWAN (69032 B, 9,1 s, Verify ok, meldet sich
+mit `Dragino LA66 Device` / `DR-LWS-007` / DevEUI unverändert) → P2P (37640 B,
+5,0 s). **Ein Flash setzt die Funkparameter auf Werk zurück** (868.700 MHz,
+SF12), deshalb `--apply-rf`.
+
+Der Bootloader bei `0x08000000` bleibt dabei immer unangetastet — solange nur
+der App-Bereich beschrieben wird, ist der Stick nicht kaputtzukriegen: sein
+2,3-s-Fenster öffnet sich bei jedem Boot vor dem Sprung in die Anwendung.
+
+## Hört das Gateway rohes LoRa?
+
+Ja. Getestet gegen den **DLOS8N** (`10.9.0.9`, Dragino-Forwarder `fwd -d sx1302`,
+`server_type=lorawan`, EU868 mit radio0 867.5 / radio1 868.5 MHz).
+
+TrackerD auf **868.100 MHz** (Kanal 0), SF7, BW 125 kHz, Syncword `0x34`, dann
+`AT+TXTEST`. Der Konzentrator demoduliert die Pakete sauber und schiebt sie
+unverändert an beide Server:
+
+```json
+{"rxpk":[{"chan":0,"rfch":1,"freq":868.100000,"stat":1,"modu":"LORA",
+  "datr":"SF7BW125","codr":"4/5","rssi":-77,"lsnr":14.0,"foff":6509,"size":32,
+  "data":"VFJBQ0tFUkRUUkFDS0VSRFRSQUNLRVJEVFJBQ0tFUkQ="}]}
+```
+
+Das Base64 ist `TRACKERDTRACKERDTRACKERDTRACKERD` — die Nutzlast kommt
+vollständig durch, `stat:1` heißt CRC ok, und beide Uplinks werden mit
+`PUSH_ACK` quittiert. `foff` von rund 6,5 kHz ist der Quarzversatz des TrackerD.
+
+Der Forwarder versucht anschließend, das Ganze als LoRaWAN zu lesen, und
+verhaspelt sich erwartungsgemäß:
+
+```
+[MACINFO~][UNCONF_UP]:{"ADDR":"4B434152","Size":32,"Rssi":-78,"snr":14,
+  "FCnt":17490,"FPort":69,"MIC":"4452454B"}
+```
+
+`4B434152` ist „KCAR" — die Bytes 1–4 des Musters (`RACK`) als Little-Endian-
+DevAddr gelesen; `MIC` `4452454B` ist „DREK" aus `KERD`. Der Netzserver wirft
+das mangels gültigem MIC weg.
+
+**Fazit für den Krisenkanal:** Das Gateway taugt ohne Umbau als Empfänger für
+rohes LoRa, solange Syncword `0x34` (öffentlich), ein konfigurierter Kanal und
+passendes SF/BW verwendet werden. Die Nutzlast steht base64-kodiert im
+`rxpk.data` des Semtech-UDP-Protokolls — man muss sie also **neben** der
+LoRaWAN-Kette abgreifen, nicht dahinter. Mit Syncword `0x12` (privat) hört das
+Gateway dagegen nichts.
