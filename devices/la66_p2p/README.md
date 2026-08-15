@@ -24,56 +24,85 @@ LoRaWAN-Firmware **v1.3 EU868 mit Bootloader** als Rückweg.
 
 | Datei | Adresse | Inhalt |
 |---|---|---|
-| `LA66_P2P_v1.2.4_application_withbootloder.bin` | `0x08000000` | Bootloader **und** P2P-App — das Image der Wahl |
-| `LA66_P2P_v1.2.4_application.bin` | `0x0800D000` | nur die App, setzt vorhandenen Bootloader voraus |
+| `LA66_P2P_v1.2.4_application.bin` | `0x0800D000` | nur die App — **das Image der Wahl**, solange der Bootloader schon drauf ist |
+| `LA66_P2P_v1.2.4_application_withbootloder.bin` | `0x08000000` | Bootloader **und** P2P-App, nur für den Tremo-Weg |
 | `LA66_LoRaWAN_v1.3_EU868_with_bootloader.bin` | `0x08000000` | zurück auf LoRaWAN |
 
 Das Flash-Layout steckt im Kombi-Image: die App beginnt exakt bei Offset
 `0xD000`, der Bootloader belegt also `0x08000000`–`0x0800CFFF`.
 
-## Der Stolperstein: BOOT muss auf RX
+## Zwei Flash-Wege — und welcher hier gilt
 
-Der Stick trägt einen **Dragino-OTA-Bootloader** (meldet sich nach `ATZ` mit
-`Dragino OTA bootloader EU868 v1.3`). Der ist für Updates über LoRaWAN-Downlink
-da und springt sofort weiter in die Anwendung — er nimmt über UART **kein**
-Firmware-Image an. Gemessen: zwischen Bootloader-Banner und `Dragino LA66
-Device` liegt kein Sync-Fenster, egal bei welcher Baudrate.
+Draginos Wiki trennt in Abschnitt 1.10 sauber zwischen zwei Fällen, was man
+leicht überliest:
 
-`tremo_loader.py` von Dragino wackelt in `hw_reset()` an DTR (BOOT) und RTS
-(RESET). **Beim USB-Adapter sind diese Leitungen nicht verdrahtet** — Pulse auf
-DTR und RTS lösen nachweislich keinen Reset aus (kein Banner). Der Loader läuft
-deshalb in `Connect failed: Read response header timeout`.
+* **1.10.2, Stick *ohne* Bootloader** — Tremo Programmer bzw. `tremo_loader.py`,
+  BOOT-Pad auf RX brücken, RESET. Schreibt nach `0x08000000`. Der Weg dient
+  ausdrücklich dazu, überhaupt erst einen Bootloader aufzuspielen.
+* **1.10.1, Stick *mit* Bootloader** — **unser Fall**. Update läuft über die
+  normale AT-UART, ohne jede Brücke, mit dem *Dragino Sensor Manager Utility*
+  (Menüpunkt „UART Update Firmware"). Ziel ist `0x0800D000`, also die
+  Applikation **ohne** Bootloader.
 
-Bleibt der ROM-Bootloader des ASR6601, und der wird nur über den BOOT-Pin
-betreten:
+Erkennungsmerkmal laut Doku: „If a device has a bootloader, it will output
+bootloader info to UART when boot." Unser Stick meldet bei jedem Boot
+`Dragino OTA bootloader EU868 v1.3` — er hat also einen, und die BOOT↔RX-Brücke
+ist der falsche Weg.
 
-1. **BOOT-Pad mit dem RX-Pad brücken** (Jumper-Kappe oder Dupont-Draht).
-   RX liegt im Ruhezustand auf High, zieht BOOT also mit hoch.
-2. Stick **einstecken** (bei Varianten mit Reset-Taster: stecken, dann RESET
-   drücken). Er ist jetzt im Brennmodus und meldet sich nicht mehr mit `AT`.
-3. Flashen (siehe unten).
-4. Brücke **entfernen**, Stick aus- und wieder einstecken.
+Gemessen am laufenden Gerät: Banner bei t≈0,2 s, dann **Stille bis t≈2,5 s**,
+dann startet die Anwendung. In diesem Fenster wartet der Bootloader auf das
+Utility. Auf rohe Tremo-Sync-Pakete (`0xFE 01 …`) antwortet er bei 9600, 115200
+und 921600 Baud **nicht**, ebensowenig auf ASCII-Trigger wie CR/LF, `1`, `C`,
+`0x7F`, `0x55` oder `0x18`. Deshalb läuft `tremo_loader.py` hier zwangsläufig in
+`Connect failed: Read response header timeout`.
 
 ## Flashen unter Linux
 
-Kein Tremo Programmer nötig, der ist Windows-only.
-[`la66_flash.py`](la66_flash.py) sucht den ROM-Bootloader selbstständig bei
-921600, 9600 und 115200 Baud, wählt die Flash-Adresse anhand des Dateinamens
-und prüft am Ende per CRC32:
+Das Utility ist Windows-only, aber ein PyInstaller-Build (Python 3.7 + PyQt5).
+Aus der dekompilierten Klasse `ThreadSerial1` lässt sich der UART-Weg exakt
+ablesen; [`la66_uart_flash.py`](la66_uart_flash.py) ist die 1:1-Portierung
+davon. Der Ablauf:
+
+1. Port mit **9600 Baud** öffnen.
+2. Abwechselnd **`123456\r\n`** und **`ATZ\r\n`** senden, dabei die Baudrate
+   zwischen 9600 und 921600 wechseln, bis `Dragino OTA bootloader` im Banner
+   auftaucht. Der Trigger `123456` ist der Punkt, den man ohne Blick in das
+   Utility nicht errät.
+3. **`AT+MOD=1`** — Sprung in den Programmiermodus, quittiert mit `OK`.
+4. Auf **921600** wechseln, dann Sync.
+5. Alle Tremo-Kommandos (`SYNC`/`ERASE`/`FLASH`/`VERIFY`/`REBOOT`) gehen **nicht**
+   als Binärframes raus, sondern als ASCII-Hex in
+   **`AT+TX=<len>,<HEXUPPER>\r\n`**, jeweils mit der festen UUID
+   `6666666666666666`. Quittung ist das UUID-Echo in der Antwortzeile.
+6. Nutzlast **224 Byte** je Paket, Ziel **`0x0800D000`**, am Ende CRC32-Verify
+   und Reboot.
 
 ```bash
-./la66_flash.py firmware/LA66_P2P_v1.2.4_application_withbootloder.bin
-./la66_flash.py -p /dev/ttyUSB0 -a 0x0800D000 firmware/LA66_P2P_v1.2.4_application.bin
+./la66_uart_flash.py firmware/LA66_P2P_v1.2.4_application.bin
 ```
 
-Zurück auf LoRaWAN:
+Weder Brücke noch Reset-Taster noch Windows nötig. Realer Lauf:
 
-```bash
-./la66_flash.py firmware/LA66_LoRaWAN_v1.3_EU868_with_bootloader.bin
+```
+Bootloader gefangen (2 Versuche)
+Programmiermodus aktiv (AT+MOD=1)
+Sync ok
+Datei: LA66_P2P_v1.2.4_application.bin (37640 Bytes, CRC32 03F2777D)
+Erase 0x0800D000 ...
+Flash: 37640 / 37640 (100.0%)   Dauer: 5.0 s
+Verify ok
 ```
 
-`tremo_loader.py` liegt unverändert daneben, `la66_flash.py` benutzt es als
-Bibliothek.
+Das Skript weigert sich, ein `*_withbootloder.bin` nach `0x0800D000` zu
+schreiben — dieses Image gehört nach `0x08000000` und damit auf den
+Tremo-Weg.
+
+[`la66_flash.py`](la66_flash.py) und `tremo_loader.py` bleiben für genau diesen
+Fall liegen: Stick ohne Bootloader oder Bootloader selbst erneuern, dann mit
+BOOT↔RX-Brücke.
+
+[`at.py`](at.py) ist die kleine AT-Konsole für beide Seiten
+(LA66 9600, TrackerD 115200).
 
 Die LoRaWAN-Konfiguration des Sticks vor dem Umbau steht in
 [`la66_lorawan_v1.3_cfg.txt`](la66_lorawan_v1.3_cfg.txt) — Keys entfernt,
@@ -145,3 +174,33 @@ Zwei Punkte, die den Test noch kosten können:
   `AT+SF` von 12 abwärts durchprobieren, der Rest der Parameter
   (BW 125 kHz, CR 4/5, explizit, CRC an, Präambel 8, Syncword privat) passt
   zur EByte-Voreinstellung.
+
+## Gegenstelle TrackerD: Hörtest
+
+[`hear_trackerd.py`](hear_trackerd.py) gleicht beide Seiten ab und lässt den
+TrackerD senden, während die LA66-Konsole mitgeschrieben wird.
+
+Eine Falle beim Abgleich: `AT+BW` nimmt beim LA66 nur einen **Index**
+(`0` = 125 kHz), krumme Werte wie 62500 Hz gibt es dort nicht. Der TrackerD
+kennt dagegen Hertz. Also zieht der TrackerD auf 125000 nach, nicht umgekehrt.
+Und das LA66-Syncword `1` meldet sich als `0x3444 for Public Network` — das ist
+die 16-Bit-Schreibweise des SX126x für LoRa-Syncword `0x34`, passt also zum
+TrackerD.
+
+Gemeinsame Einstellung: 868.125 MHz, SF7, BW 125 kHz, CR 4/5, Präambel 8,
+CRC an, Syncword öffentlich.
+
+```bash
+./hear_trackerd.py --txtest 10
+```
+
+Ergebnis auf dem Tisch (beide Geräte nebeneinander):
+
+```
++  8.61s  Data: (HEX:) 54 52 41 43 4b 45 52 44 54 52 41 43 4b 45 52 44 ...
++  8.61s  Rssi= -21
+Ergebnis: GEHOERT
+```
+
+`54 52 41 43 4b 45 52 44` ist `TRACKERD`, das 32-Byte-Muster aus `AT+TXTEST`.
+RSSI −21 bis −22 dBm über wenige Zentimeter, ein Paket rund alle 200 ms.
