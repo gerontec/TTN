@@ -7,6 +7,10 @@ LoRaWAN-AT-Firmware kann kein P2P.
 
 Stand **15.08.2026**.
 
+**Zum Nachmachen: [ANLEITUNG.md](ANLEITUNG.md)** — Schritt für Schritt, mit
+Entscheidungsbaum (Bootloader vorhanden oder nicht) und Fehlertabelle. Der Rest
+dieser Datei erklärt, warum es so läuft.
+
 ## Woher die Firmware kommt
 
 Nicht von GitHub. [github.com/dragino/LA66](https://github.com/dragino/LA66)
