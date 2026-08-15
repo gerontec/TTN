@@ -1,3 +1,5 @@
+# WireGuard-Abschnitt (network.wg0 / network.wgserver) entfernt: der
+# Notfallkanal laeuft ueber das LAN und darf an keinem Tunnel haengen.
 network.loopback=interface
 network.loopback.ifname='lo'
 network.loopback.proto='static'
@@ -17,17 +19,6 @@ network.wan.ifname='eth1'
 network.wan.hostname='dragino-27e318'
 network.wwan=interface
 network.wwan.proto='dhcp'
-network.wg0=interface
-network.wg0.proto='wireguard'
-network.wg0.private_key='<ENTFERNT>'
-network.wg0.addresses='10.9.0.9/32'
-network.wgserver=wireguard_wg0
-network.wgserver.route_allowed_ips='1'
-network.wgserver.endpoint_port='51820'
-network.wgserver.persistent_keepalive='25'
-network.wgserver.public_key='LiXDGGNLKp27WHIeCaullUTdGor91HRRM3AOB8VimCU='
-network.wgserver.endpoint_host='82.165.41.91'
-network.wgserver.allowed_ips='10.9.0.0/24'
 network.quectel=interface
 network.quectel.autostart='1'
 network.quectel.ifname='wwan0'

@@ -4,8 +4,8 @@ TTN-Anwendung: **`lenggries-sensors`** (Konto `lenggries`, eu1), angelegt 14.08.
 
 | Gerät | DevEUI | JoinEUI | Modus | Rolle |
 |---|---|---|---|---|
-| Dragino **TrackerD** | `A840414F1188076C` | `A840410000000102` | OTAA | GPS-Tracker, Position → Traccar |
-| Dragino **LA66 USB-Adapter v1.3** | `A8404117F18962E0` | `A840410000000101` | OTAA | Krisen-/Notfallgerät, siehe unten |
+| Dragino **TrackerD** | `A840414F1188076C` | `A840410000000102` | ABP | GPS-Tracker |
+| Dragino **LA66 USB-Adapter v1.3** | `A8404117F18962E0` | `A840410000000101` | ABP | Krisen-/Notfallgerät, siehe unten |
 | Dragino **LHT65** | (aus Gateway-DB) | — | ABP, Altbestand | Temperatur/Feuchte, noch nicht migriert |
 
 Der AppKey des TrackerD steht seit 14.08.2026 unten in diesem Dokument —
@@ -13,8 +13,14 @@ bewusste Entscheidung des Eigentümers, obwohl das Repo öffentlich ist. Wer
 den Schlüssel hat, kann Funksprüche dieses Geräts entschlüsseln und sich mit
 einem beliebigen Radio als das Gerät ausgeben. Das Gerät gilt damit als
 öffentlich; wer das nicht will, setzt per AT einen neuen AppKey und trägt ihn
-im Netzserver nach. Die übrigen Schlüssel liegen auf heissa.de unter
-`~/.config/ttn/` bzw. auf dem Aufkleber des jeweiligen Geräts.
+im Netzserver nach. Die übrigen Schlüssel stehen im jeweiligen Gerät (`AT+CFG`)
+oder auf dessen Aufkleber; der TTN-API-Key liegt ausserhalb dieses Repos unter
+`~/.config/ttn/lenggries.key` auf dem Rechner, der die Skripte in `ttn/` fährt.
+
+**Beide Geräte laufen als ABP**, lokal wie im TTN. Das Gateway schiebt jeden
+Uplink an beide Server, und beide dürfen Downlinks senden; ein OTAA-Gerät
+bekäme zwei JoinAccepts und nähme das zuerst eintreffende — der lokale Server
+könnte es also jederzeit an TTN verlieren.
 
 ## TrackerD
 
@@ -105,9 +111,9 @@ kein Gerät mit Schlüsseln bekannt.
 
 Payload-Decoder: `trackerd.js`, unverändert aus dem
 [TTN-Device-Repository](https://github.com/TheThingsNetwork/lorawan-devices/blob/master/vendor/dragino/trackerd.js).
-Die Brücke auf heissa.de führt dieselbe Logik als Python-Portierung aus —
-inklusive der Eigenheit, dass `MD` in Port 2/3 unverschoben (`& 0xc0`), in
-Port 8 dagegen verschoben (`>> 6`) gebildet wird.
+Eine Eigenheit, über die jede Nachbau-Implementierung stolpert: `MD` wird in
+Port 2/3 unverschoben (`& 0xc0`) gebildet, in Port 8 dagegen verschoben
+(`>> 6`).
 
 | fPort | Inhalt |
 |---|---|

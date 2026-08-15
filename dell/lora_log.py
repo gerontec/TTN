@@ -25,7 +25,7 @@ import pymysql
 # zeigt man mit LORA_BROKER/LORA_DB_HOST auf den dell (192.168.5.23).
 BROKER = os.environ.get("LORA_BROKER", "127.0.0.1")
 DB = dict(host=os.environ.get("LORA_DB_HOST", "127.0.0.1"),
-          user="gh", password="a12345", database="wagodb",
+          user="gh", password="<ENTFERNT>", database="wagodb",
           charset="utf8mb4", autocommit=True, connect_timeout=5)
 
 logging.basicConfig(level=logging.INFO,

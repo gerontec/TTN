@@ -36,7 +36,7 @@ BROKER = os.environ.get("LORA_BROKER", "127.0.0.1")
 DB_HOST = os.environ.get("LORA_DB_HOST", "127.0.0.1")
 TOPIC = "crisis"
 DEV_EUI = "a840414f1188076c"
-DB = dict(user="gh", password="a12345", database="wagodb",
+DB = dict(user="gh", password="<ENTFERNT>", database="wagodb",
           charset="utf8mb4", autocommit=True, cursorclass=pymysql.cursors.DictCursor)
 STAND = os.path.expanduser("~/.local/state/lora_bcast.id")
 TAKT = 5

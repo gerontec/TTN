@@ -5,7 +5,7 @@ TTS verteilt ein Geraet auf vier Dienste, die nacheinander bedient werden
 muessen — Identity Server, Join Server, Network Server, Application Server.
 Ein einziger POST reicht nicht, und die Reihenfolge ist nicht beliebig.
 
-Aufruf (auf heissa.de, der API-Key liegt dort):
+Aufruf auf dem Rechner, auf dem der API-Key liegt (~/.config/ttn/lenggries.key):
     APPKEY=<hex> ./ttn_register.py <device_id> <dev_eui> <join_eui> [modell]
 
 Der AppKey kommt bewusst aus der Umgebung und nicht aus argv, damit er nicht
