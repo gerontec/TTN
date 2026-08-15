@@ -134,9 +134,12 @@ Zwei Punkte, die den Test noch kosten können:
   bei Firmware `7434-2-11` nicht: `AT+SWITCH` und `AT+MODE` gibt es erst ab
   `7453-0-2x`, dieser Stand antwortet darauf mit `FF FF FF`.
 * **Finger weg von `AT+IAP`** — auch von `AT+IAP=?`. Das Kommando kennt keine
-  Abfrageform, es wirft den Stick sofort in den Firmware-Update-Modus, in dem
-  er nur noch Müll antwortet. Ein USB-Reset holt ihn da nicht heraus, nur
-  Ausstecken und wieder Einstecken.
+  Abfrageform; das `=?` wird als Kommando ausgeführt, quittiert mit `AT+IAP=OK`
+  und wirft den Stick in den Firmware-Update-Modus. Schlimm ist das nicht:
+  dort **schaltet er auf 115200 Baud um**, gibt Log aus und verlässt den Modus
+  von selbst wieder. Wer weiter bei 9600 mitliest, sieht nur Zeichensalat und
+  hält das Modul für tot. Das Datenblatt sagt dazu klar: „Do not use the
+  `AT+IAP` command."
 * EByte gibt statt SF/BW nur eine „Air Rate" her. 2.4k ist nach Datenblatt-Lesart
   SF10/BW125, verbürgt ist das nicht. Wenn nichts ankommt: auf der LA66-Seite
   `AT+SF` von 12 abwärts durchprobieren, der Rest der Parameter
