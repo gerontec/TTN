@@ -665,6 +665,29 @@ void LoRaClass::setSPIFrequency(uint32_t frequency)
   _spiSettings = SPISettings(frequency, MSBFIRST, SPI_MODE0);
 }
 
+void LoRaClass::forceLdo(bool on)
+{
+  // setLdoFlag() schaltet LDRO nur ein, wenn die Symboldauer ueber 16 ms
+  // liegt. Ebyte-Module fahren es aber auch darunter -- bei SF11/BW500 sind
+  // es 4,1 ms und das E90-DTU hat LDRO trotzdem gesetzt. Ohne diese
+  // Moeglichkeit rastet der Header ein und jede Nutzlast scheitert an der CRC.
+  // Muss nach jeder Aenderung von SF oder Bandbreite neu gesetzt werden, weil
+  // beide setLdoFlag() aufrufen.
+  uint8_t config3 = readRegister(REG_MODEM_CONFIG_3);
+  bitWrite(config3, 3, on);
+  writeRegister(REG_MODEM_CONFIG_3, config3);
+}
+
+uint8_t LoRaClass::readIrqFlags()
+{
+  return readRegister(REG_IRQ_FLAGS);
+}
+
+void LoRaClass::clearIrqFlags(uint8_t flags)
+{
+  writeRegister(REG_IRQ_FLAGS, flags);   // write-1-to-clear
+}
+
 void LoRaClass::dumpRegisters(Stream& out)
 {
   for (int i = 0; i < 128; i++) {

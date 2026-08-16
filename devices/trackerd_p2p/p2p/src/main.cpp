@@ -16,7 +16,7 @@
 #include <LoRa.h>
 #include <esp_ota_ops.h>
 
-#define FW_VERSION "TrackerD-P2P v1.4"
+#define FW_VERSION "TrackerD-P2P v1.6"
 
 /* Pinbelegung laut Dragino-Pinmapping (README des TrackerD-Repos) */
 #define PIN_SCK    5
@@ -29,6 +29,24 @@
 #define LED_RED   15
 #define LED_BLUE   2
 #define LED_GREEN 13
+
+/* Der rote Alarmknopf. Pin und Polaritaet aus der Dragino-LoRaWAN-Firmware,
+ * extiButtonLS.h:9 und extiButtonLS.cpp:5:
+ *
+ *     #define BUTTON_PIN1 25
+ *     OneButton button1(BUTTON_PIN1, false, false);
+ *
+ * Die beiden false heissen activeLow=false und pullupActive=false: der Pin
+ * liegt im Ruhezustand LOW und geht beim Druecken auf HIGH, ein interner
+ * Pullup wird nicht gebraucht. Wer hier von der ueblichen Active-Low-Taste
+ * ausgeht, baut die Logik verkehrt herum ein. */
+#define PIN_BUTTON 25
+
+/* Haltezeit bis zum Alarm. Dragino nimmt dafuer sys.exit_alarm_time, in
+ * TrackerD.ino:1301 auf 2000 ms gesetzt -- derselbe Wert, damit der Knopf
+ * sich in beiden Firmwares gleich anfuehlt. Ein kurzer Druck tut auch dort
+ * nichts (attachClick ist auskommentiert). */
+#define ALARM_HOLD_MS 2000
 
 /* Defaults: EU868, passend zum gemeinsamen Kanal des Krisennetzes
  * (Gateway DLOS8N chan_Lora_std, Relais Brauneck: 868.125 MHz, SF7, BW125).
@@ -55,6 +73,14 @@ static char     cfgId[5]  = "076C";
 static bool     cfgImplicit = false;   /* impliziter Header (feste Laenge) */
 static int      cfgImplicitLen = 32;
 
+/* LDRO: -1 = automatisch wie die Bibliothek es rechnet, 0/1 = erzwungen.
+ * Fuer Ebyte muss es 1 sein, obwohl die Symboldauer unter 16 ms liegt. */
+static int      cfgLdro   = -1;
+
+/* Ebyte-Modus: Pakete zusaetzlich in den Rahmen des E90-DTU verpacken.
+ * Messungen und Format stehen in ../pico_sx1262/EBYTE_E90.md. */
+static bool     cfgEbyte  = false;
+
 static uint32_t rxCount = 0, txCount = 0;
 
 static void blink(int pin, int ms)
@@ -75,6 +101,8 @@ static void applyRadio()
     LoRa.setSyncWord(cfgSync);
     LoRa.setTxPower(cfgPower, PA_OUTPUT_PA_BOOST_PIN);
     if (cfgCrc) LoRa.enableCrc(); else LoRa.disableCrc();
+    /* Nach SF und Bandbreite, weil beide das LDRO-Bit neu berechnen. */
+    if (cfgLdro >= 0) LoRa.forceLdo(cfgLdro != 0);
     if (rxEnabled) LoRa.receive(cfgImplicit ? cfgImplicitLen : 0);
 }
 
@@ -91,6 +119,8 @@ static void printCfg()
     Serial.printf("CRC=%d\r\n",     cfgCrc ? 1 : 0);
     Serial.printf("IH=%d PLEN=%d\r\n", cfgImplicit ? 1 : 0, cfgImplicitLen);
     Serial.printf("RX=%d\r\n",      rxEnabled ? 1 : 0);
+    Serial.printf("LDRO=%s\r\n",    cfgLdro < 0 ? "auto" : (cfgLdro ? "1" : "0"));
+    Serial.printf("EBYTE=%d\r\n",   cfgEbyte ? 1 : 0);
     Serial.printf("TXCNT=%lu RXCNT=%lu\r\n",
                   (unsigned long)txCount, (unsigned long)rxCount);
 }
@@ -99,6 +129,33 @@ static void printCfg()
  * einzelnen AT-Befehlen, damit AT+SEND und AT+SENDB ihn gleichermassen
  * bekommen. AT+TXTEST bleibt bewusst aussen vor: das ist ein rohes Messmuster
  * fuer die RSSI-Messung der Gegenstelle, keine Nachricht. */
+/* Rahmen des E90-DTU. Aufbau und Pruefsummenregel sind an zwei Geraeten
+ * ausgemessen, siehe ../pico_sx1262/EBYTE_E90.md:
+ *
+ *     2c 12 XX YY NN HH LL SS | Nutzlast XOR 0x12
+ *
+ * XX ist das XOR ueber die Klartext-Nutzlast, danach ^ 0xA0; YY ist XX ^ 0xA1.
+ * Ein Rahmen mit falschem XX wird verworfen.
+ *
+ * NN ist die NETID und muss 0 sein: der Repeater leitet gemessen nur weiter,
+ * wenn sie mit seiner eigenen uebereinstimmt (3/3 bei 0x00, 0/3 bei allen
+ * anderen). Die Adresse HH LL ist ihm dagegen gleichgueltig. */
+static size_t ebyteWrap(const uint8_t *in, size_t len, uint8_t *out, size_t cap)
+{
+    if (len > 240) len = 240;
+    if (len + 8 > cap) len = cap - 8;
+    uint8_t x = 0;
+    for (size_t i = 0; i < len; i++) x ^= in[i];
+    uint8_t xx = (uint8_t)(x ^ 0xA0);
+    out[0] = 0x2C; out[1] = 0x12;
+    out[2] = xx;   out[3] = (uint8_t)(xx ^ 0xA1);
+    out[4] = 0x00;                 /* NETID 0, sonst leitet der Repeater nicht */
+    out[5] = 0x00; out[6] = 0x00;  /* Adresse, fuer den Repeater belanglos */
+    out[7] = (uint8_t)len;
+    for (size_t i = 0; i < len; i++) out[8 + i] = (uint8_t)(in[i] ^ 0x12);
+    return len + 8;
+}
+
 static void sendPacket(const uint8_t *buf, size_t len)
 {
     uint8_t out[255];
@@ -108,15 +165,60 @@ static void sendPacket(const uint8_t *buf, size_t len)
     if (len > sizeof(out) - hdr) len = sizeof(out) - hdr;
     memcpy(out + hdr, buf, len);
 
+    /* Im Ebyte-Modus wandert das fertige Paket samt Absenderkennung als
+     * Nutzlast in den DTU-Rahmen -- die Kennung bleibt so erhalten. */
+    uint8_t roh[255];
+    size_t  rohLen = 0;
+    if (cfgEbyte) rohLen = ebyteWrap(out, hdr + len, roh, sizeof(roh));
+
     LoRa.idle();
     LoRa.beginPacket();
-    LoRa.write(out, hdr + len);
+    if (cfgEbyte) LoRa.write(roh, rohLen);
+    else          LoRa.write(out, hdr + len);
     LoRa.endPacket();
     txCount++;
     blink(LED_BLUE, 30);
     if (rxEnabled) LoRa.receive(cfgImplicit ? cfgImplicitLen : 0);
-    Serial.printf("+SEND: OK %u Byte (Kennung %s)\r\n",
-                  (unsigned)(hdr + len), cfgId);
+    Serial.printf("+SEND: OK %u Byte (Kennung %s%s)\r\n",
+                  (unsigned)(cfgEbyte ? rohLen : hdr + len), cfgId,
+                  cfgEbyte ? ", Ebyte-Rahmen" : "");
+}
+
+/* Alarm senden. Geht durch sendPacket, bekommt also die Absenderkennung
+ * "IIII>" wie jedes andere Paket -- das Relais wertet sie aus. */
+static void sendeAlarm(const char *grund)
+{
+    digitalWrite(LED_RED, HIGH);
+    sendPacket((const uint8_t *)"ALARM", 5);
+    Serial.printf("+ALARM: gesendet (%s)\r\n", grund);
+    delay(150);
+    digitalWrite(LED_RED, LOW);
+}
+
+/* Den Knopf pollen statt per Interrupt: die Haltezeit muss ohnehin gemessen
+ * werden, und aus einer ISR heraus zu senden waere hier falsch. Der Aufruf
+ * kommt aus loop() und darf nicht blockieren. */
+static void pruefeKnopf()
+{
+    static bool     letzter    = false;
+    static uint32_t seitWann   = 0;
+    static bool     gemeldet   = false;
+
+    bool gedrueckt = (digitalRead(PIN_BUTTON) == HIGH);
+
+    if (gedrueckt != letzter) {
+        /* Jede Flanke setzt die Uhr zurueck. Das entprellt zugleich: waehrend
+         * es prellt, kommt die Haltezeit nie zustande. */
+        letzter  = gedrueckt;
+        seitWann = millis();
+        if (!gedrueckt) gemeldet = false;   /* erst nach Loslassen wieder scharf */
+        return;
+    }
+    if (!gedrueckt || gemeldet) return;
+    if (millis() - seitWann < ALARM_HOLD_MS) return;
+
+    gemeldet = true;                        /* genau ein Alarm je Druck */
+    sendeAlarm("Knopf");
 }
 
 static int hexVal(char c)
@@ -356,6 +458,32 @@ static void handleLine(String line)
         }
         sendPacket(buf, len); return;
     }
+    /* Ganzes Profil auf das E90-DTU umstellen bzw. zurueck auf den
+     * Brauneck-Rohkanal. Einzeln liessen sich alle Werte auch per AT+SF,
+     * AT+BW usw. setzen -- als Sammelbefehl ist es aber schwerer, einen davon
+     * zu vergessen, und LDRO waere sonst gar nicht erreichbar. */
+    if ((a = argOf(line, "AT+EBYTE"))) {
+        if (*a == '1') {
+            cfgFreq = 868125000; cfgSf = 11; cfgBw = 500000; cfgCr = 5;
+            cfgSync = 0x58; cfgPre = 8; cfgCrc = true;
+            cfgLdro = 1; cfgEbyte = true;
+        } else if (*a == '0') {
+            cfgFreq = 868125000; cfgSf = 7; cfgBw = 125000; cfgCr = 5;
+            cfgSync = 0x34; cfgPre = 8; cfgCrc = true;
+            cfgLdro = -1; cfgEbyte = false;
+        } else { Serial.println("AT_PARAM_ERROR"); return; }
+        applyRadio();
+        printCfg();
+        Serial.println("OK");
+        return;
+    }
+    /* Denselben Alarm ohne Knopf ausloesen -- fuer Tests, wenn niemand am
+     * Geraet steht. */
+    if (!strcasecmp(line.c_str(), "AT+ALARM")) {
+        sendeAlarm("AT+ALARM");
+        Serial.println("OK");
+        return;
+    }
     Serial.println("AT_ERROR");
 }
 
@@ -365,6 +493,7 @@ void setup()
     pinMode(LED_RED, OUTPUT);
     pinMode(LED_BLUE, OUTPUT);
     pinMode(LED_GREEN, OUTPUT);
+    pinMode(PIN_BUTTON, INPUT);     /* active high, kein Pullup noetig */
     digitalWrite(LED_RED, LOW);
     digitalWrite(LED_BLUE, LOW);
     digitalWrite(LED_GREEN, LOW);
@@ -392,6 +521,8 @@ void loop()
         if (c == '\n' || c == '\r') { handleLine(line); line = ""; }
         else if (line.length() < 300) line += c;
     }
+
+    pruefeKnopf();
 
     int sz = LoRa.parsePacket();
     if (sz > 0) {

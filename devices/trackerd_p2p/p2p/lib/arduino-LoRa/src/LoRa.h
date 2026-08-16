@@ -97,6 +97,17 @@ public:
 
   void dumpRegisters(Stream& out);
 
+  // Rohzugriff auf REG_IRQ_FLAGS. Die Bibliothek wertet die Flags sonst nur
+  // intern aus; fuer die Diagnose (AT+IRQ) braucht es sie von aussen, um
+  // sehen zu koennen, ob ueberhaupt ein Header oder eine CRC ankommt.
+  // Loeschen ist write-1-to-clear.
+  uint8_t readIrqFlags();
+  void clearIrqFlags(uint8_t flags);
+
+  // LDRO von Hand setzen, statt es aus der Symboldauer abzuleiten.
+  // Nach setSpreadingFactor()/setSignalBandwidth() erneut aufrufen.
+  void forceLdo(bool on);
+
 private:
   void explicitHeaderMode();
   void implicitHeaderMode();
