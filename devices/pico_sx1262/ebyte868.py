@@ -35,7 +35,23 @@ LDRO = 1
 SYNCWORD = 0x58
 POWER_DBM = 14          # 868.0-868.6 MHz: 25 mW ERP, 1 % Duty Cycle
 MAGIC = b"\x2c\x12"     # der 400er benutzt hier 0x17
-ADRESSE = b"\x00\x00\x00"   # NETID 0, Adresse 0x0000
+# NETID 0 und eigene Adresse 0x0C2B.
+#
+# Die NETID **muss** 0 bleiben: der E90-Repeater leitet gemessen nur weiter,
+# wenn sie mit seiner eigenen uebereinstimmt (3/3 bei 0x00, 0/3 bei allen
+# anderen). Die Adresse ist ihm dagegen gleichgueltig.
+#
+# Die Adresse traegt das Modul als **eigene** Kennung in den Rahmen -- das
+# E90-DTU(400SL30) steht auf 65535 und sendet ff ff, das 900SL33 auf 0 und
+# sendet 00 00. Der Pico bekommt deshalb eine eigene, damit er im Mitschnitt
+# von den anderen Knoten zu unterscheiden ist: 0x0C2B, die letzten vier
+# Hexstellen seiner Seriennummer e6626005a75d0c2b. Das ist dieselbe Regel, mit
+# der die TrackerD-Firmware ihre Kennung 076C aus der DevEUI ableitet.
+#
+# Empfaenger muessen dafuer auf 0xFFFF (Monitor) stehen, dann nehmen sie jede
+# Absenderadresse an. Ein Empfaenger mit fester Adresse filtert -- siehe
+# EBYTE_E90.md.
+ADRESSE = b"\x00\x0c\x2b"
 
 
 def rahmen(nutz):
