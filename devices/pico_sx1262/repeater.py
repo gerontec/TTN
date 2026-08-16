@@ -76,6 +76,16 @@ IN_DUTY = 1.0                   # Prozent, Band 868.0-868.6
 
 TELEM_EVERY = 1                 # Quittung nach jedem n-ten weitergegebenen Paket
 
+# --- Systemtakt -----------------------------------------------------------
+# Die Station haengt am Panel ohne Puffer; jedes eingesparte Milliampere
+# entlastet die Versorgung und senkt den Spannungseinbruch unter Last. Der
+# Prozessor wartet ohnehin nur auf den Funkchip -- Modulation und Timing macht
+# der SX1262 selbst, 125 MHz sind dafuer sinnlos.
+# Abgetastet: 125/96/64/48/32/24 MHz laufen sauber, bei 18 MHz liefert der SPI
+# Muell (Syncword-Register liest a2a2 statt 3444) und 12 MHz lehnt MicroPython
+# ab. 48 MHz laesst reichlich Abstand zu dieser Kante.
+TAKT_HZ = 48000000
+
 
 class Budget:
     """Haelt die Sperrzeit eines Bandes nach."""
@@ -145,6 +155,11 @@ def run(telemetrie=None, verbose=True, dauer_s=0):
     Sendeleistung, Spreizfaktor und Frequenz talwaerts kommen aus der
     gesicherten Konfiguration und lassen sich im Betrieb per Funk aendern
     (siehe fernwirk.py) -- auf dem Berg gibt es keinen anderen Zugang."""
+    # Vor dem Funkchip: clk_peri haengt an clk_sys, ein vorher erzeugtes
+    # SPI-Objekt haette die falsche Teilung.
+    if machine.freq() != TAKT_HZ:
+        machine.freq(TAKT_HZ)
+        lora_p2p._radio = None
     r = lora_p2p.radio()
     start = utime.ticks_ms()
     konf = fernwirk.konf_laden()
@@ -163,6 +178,7 @@ def run(telemetrie=None, verbose=True, dauer_s=0):
     print("  Ausgang : %.3f MHz  SF%d  BW%d  %d dBm  (%.0f %% Sendezeit)"
           % (konf["out_freq"] / 1e6, konf["out_sf"], OUT_BW // 1000,
              konf["out_power"], OUT_DUTY))
+    print("  Takt    : %d MHz" % (machine.freq() // 1000000))
     print("  Fernwirken: C>POWER <dBm> | SF | FREQ | STATUS | RELAY | SAVE | REBOOT")
 
     while True:

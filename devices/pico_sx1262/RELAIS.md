@@ -168,8 +168,50 @@ einen Akku.
 
 Stromhunger als Anhaltspunkt: der RP2040 zieht bei 125 MHz rund 25 mA, der
 SX1262 im Dauerempfang etwa 5 mA, im Sendemoment bei 22 dBm rund 118 mA. Der
-Sendeanteil ist wegen des Sendezeitbudgets klein; die Dauerlast bestimmt der
-Prozessor.
+Sendeanteil ist wegen des Sendezeitbudgets klein; **die Dauerlast bestimmt der
+Prozessor** — deshalb der reduzierte Systemtakt.
+
+### Systemtakt 48 MHz
+
+125 MHz sind für diese Aufgabe sinnlos: Modulation, Timing und Preamble macht
+der SX1262 selbst, der RP2040 schreibt nur Konfigurationsbytes über SPI und
+wartet auf BUSY. Weniger Takt heißt weniger Strom, und weniger Strom heißt bei
+einer Versorgung ohne Puffer weniger Spannungseinbruch unter Last — also eine
+niedrigere Schwelle, ab der die Station überhaupt stabil läuft.
+
+Abgetastet, jeweils mit Registerprobe und echter Aussendung:
+
+| Takt | Ergebnis |
+|---|---|
+| 125 / 96 / 64 / 48 / 32 / 24 MHz | sauber, `DevErr 0x0000`, Syncword `3444`, TX ok |
+| **18 MHz** | **SPI liefert Müll** — Syncword liest `a2a2`, TX schlägt fehl |
+| 12 MHz | `machine.freq()` lehnt ab |
+
+24 MHz lief in einer Nachprobe 6 von 6 sauber, liegt aber dicht an der Kante.
+Gewählt sind **48 MHz** — reichlich Abstand zur Ausfallgrenze bei immer noch
+gut halbiertem Prozessorstrom. Bei einer Station, an die man nur mit einer
+Bergtour kommt, ist der Abstand mehr wert als die letzten Milliampere.
+
+Der Takt wird **vor** dem Aufsetzen des Funkchips gestellt: `clk_peri` hängt am
+Systemtakt, ein vorher erzeugtes SPI-Objekt hätte die falsche Teilung. Deshalb
+setzt `run()` die Frequenz und verwirft ein bestehendes Radio-Objekt.
+
+Der Takt ist bewusst **nicht** per Fernwirken änderbar — ein falscher Wert
+würde die Station bis zum nächsten Sonnenaufgang unerreichbar machen.
+
+Was die Taktsenkung kostet: die Software-Zeit um eine Aussendung herum wächst
+von 47 ms bei 125 MHz auf 54 ms bei 48 MHz (gemessen, bei ~46 ms reiner
+Luftzeit). Das ist Overhead im Bereich einzelner Millisekunden und für den
+Betrieb bedeutungslos.
+
+Nachgemessen bei 48 MHz, Fernwirken über die Luft:
+
+```
+gesendet: C>POWER 20
+Antwort: POWER 20 dBm   (RSSI -90, SNR 14.0)
+gesendet: C>STATUS
+Antwort: auf0 ab0 unt0 31s an SF12 20dBm 869.525 tel1   (RSSI -89, SNR 13.2)
+```
 
 ## Betrieb
 
