@@ -16,7 +16,7 @@
 #include <LoRa.h>
 #include <esp_ota_ops.h>
 
-#define FW_VERSION "TrackerD-P2P v2.1"
+#define FW_VERSION "TrackerD-P2P v2.4"
 
 /* Pinbelegung laut Dragino-Pinmapping (README des TrackerD-Repos) */
 #define PIN_SCK    5
@@ -30,25 +30,29 @@
 #define LED_BLUE   2
 #define LED_GREEN 13
 
-/* Der rote Alarmknopf -- **Pin noch nicht gefunden, der Knopf loest nicht aus.**
+/* Der rote Alarmknopf: **GPIO 25, active high, mit PULLDOWN.**
  *
- * Wichtig, weil es die naheliegende Spur entwertet: **GPIO 25 ist nicht der
- * Knopf, sondern GPS_RESET** (GPS.h:7), und GPIO 12 ist GPS_POWER (GPS.h:6).
- * extiButtonLS.h:9 nennt zwar BUTTON_PIN1 25, das gilt an diesem Geraet nicht.
- * Die zweite Dragino-Variante extiButton.h:9 nennt BUTTON_PIN 0.
+ * Belegt durch TrackerD.ino:1751 -- dort steht
+ * esp_sleep_enable_ext1_wakeup(BUTTON_PIN_25, ESP_EXT1_WAKEUP_ANY_HIGH), und
+ * dieser Block laeuft immer: dem vorangehenden if (GPIO 0, ALL_LOW, nur fuer
+ * cdevaddr <= 25692040) fehlt das else. Bestaetigt an der Luft, der Alarm
+ * loeste beim Druck aus.
  *
- * Drei Irrwege, die dokumentiert bleiben sollen:
+ * GPIO 25 ist doppelt belegt -- GPS.h:7 fuehrt ihn als GPS_RESET. Er ist also
+ * Ausgang zum GPS *und* Tastereingang; beim GPS-Einbau darf er nicht dauerhaft
+ * getrieben werden.
+ *
+ * Vier Irrwege, die als Warnung bleiben:
  *   - Ohne Pull-Widerstand gemessen: freischwebende Eingaenge liefern Rauschen,
- *     das wie Flanken aussieht. GPIO 0 und 33 zeigten Wechsel, die keine waren.
- *   - GPIO 0 schien danach zu folgen, wird aber von der Auto-Reset-Schaltung
- *     ueber DTR getrieben. Mit dtr=False steht er konstant.
- *   - Mit **Pullup** gemessen, obwohl Dragino den Knopf als active high angibt
- *     (OneButton(pin, false, false)). Ein active-high Knopf liest am Pullup
- *     gedrueckt wie losgelassen als 1 -- der Unterschied ist gar nicht messbar.
- *     AT+BTN misst deshalb jetzt mit PULLDOWN.
- *
- * Naechster Schritt: AT+BTN mit den freien Pins (0, 14, 16, 17, 21, 22, 32, 33)
- * gegen einen laengeren Druck laufen lassen. Bis dahin loest nur AT+ALARM aus. */
+ *     das wie Flanken aussieht.
+ *   - GPIO 0 schien zu folgen, wird aber von der Auto-Reset-Schaltung ueber DTR
+ *     getrieben. Mit dtr=False steht er konstant.
+ *   - Mit PULLUP gemessen: ein active-high Knopf liest damit gedrueckt wie
+ *     losgelassen als 1, der Unterschied ist gar nicht messbar. Das war der
+ *     eigentliche Grund, warum GPIO 25 lange stumm schien.
+ *   - AT+BTN blockierte sekundenlang in handleLine(); loop() kehrte nie zurueck
+ *     und der Task-Watchdog setzte das Geraet zurueck (rst:0x8 TG1WDT_SYS_RESET).
+ *     Die Abtastung laeuft deshalb jetzt aus loop(). */
 #define PIN_BUTTON 25
 
 /* Haltezeit bis zum Alarm. Dragino nimmt dafuer sys.exit_alarm_time, in
@@ -114,6 +118,15 @@ static int      cfgEbyte  = SENDE_BEIDE;
 #define EBY_SF    11
 #define EBY_BW    500000L
 #define EBY_SYNC  0x58
+
+/* Pin-Diagnose (AT+BTN). Der Zustand liegt auf Dateiebene, weil die Abtastung
+ * aus loop() kommt und nicht aus handleLine(): ein sekundenlang blockierender
+ * AT-Befehl laesst loop() nie zurueckkehren und der Task-Watchdog setzt das
+ * Geraet zurueck (rst:0x8 TG1WDT_SYS_RESET). Genau daran sind die ersten
+ * Messlaeufe gescheitert -- sie lieferten deshalb gar keine Ausgabe. */
+static const int btnPins[] = { 25, 0, 14, 16, 17, 21, 22, 32 };
+#define BTN_ANZAHL (int)(sizeof(btnPins) / sizeof(btnPins[0]))
+static uint32_t btnBis = 0, btnNaechste = 0;
 
 static uint32_t rxCount = 0, txCount = 0;
 
@@ -543,40 +556,23 @@ static void handleLine(String line)
      * Die Kandidaten sind freie Pins; SPI (5,18,19,23,26,27), LEDs (2,13,15)
      * und Flash (6-11) bleiben aussen vor. */
     if ((a = argOf(line, "AT+BTN"))) {
-        /* 12 und 25 sind raus: GPS_POWER und GPS_RESET (GPS.h), also Ausgaenge.
-         * 34/35 sind die Batteriemessung (BAT_PIN_READ1/BAT_PIN_READ), 4 ist
-         * BAT_PIN_LOW. Es bleiben die wirklich freien Pins. */
-        static const int kandidaten[] = { 0, 14, 16, 17, 21, 22, 32, 33 };
-        const int anzahl = sizeof(kandidaten) / sizeof(kandidaten[0]);
         int secs = *a ? atoi(a) : 15;
         if (secs < 1) secs = 1;
         if (secs > 120) secs = 120;
-        /* Pullup einschalten, sonst schwebt der Eingang und man misst Rauschen
-         * statt des Knopfes. GPIO34-39 sind reine Eingaenge ohne interne
-         * Widerstaende -- die bleiben zwangslaeufig offen und sind hier nur
-         * der Vollstaendigkeit halber dabei. */
         /* PULLDOWN, nicht PULLUP: Dragino gibt den Knopf als active high an
-         * (OneButton(pin, false, false)). Mit Pullup liest ein active-high
-         * Knopf gedrueckt wie losgelassen als 1 -- der Unterschied ist dann
-         * gar nicht messbar. Das war der Fehler der ersten Suchlaeufe. */
-        for (int i = 0; i < anzahl; i++) {
-            int p = kandidaten[i];
+         * (ext1-Wakeup mit ESP_EXT1_WAKEUP_ANY_HIGH auf GPIO 25). Ein
+         * active-high Knopf liest am Pullup gedrueckt wie losgelassen als 1 --
+         * der Unterschied waere gar nicht messbar. */
+        for (int i = 0; i < BTN_ANZAHL; i++) {
+            int p = btnPins[i];
             pinMode(p, (p >= 34) ? INPUT : INPUT_PULLDOWN);
         }
-        delay(20);
         Serial.print("+BTN: Pins ");
-        for (int i = 0; i < anzahl; i++) Serial.printf("%d ", kandidaten[i]);
-        Serial.printf("\r\n+BTN: %d s, Momentaufnahme alle 250 ms - "
-                      "druecken und wieder loslassen\r\n", secs);
-        uint32_t t0 = millis();
-        while (millis() - t0 < (uint32_t)secs * 1000) {
-            Serial.printf("+BTN %5lu ", (unsigned long)(millis() - t0));
-            for (int i = 0; i < anzahl; i++)
-                Serial.print(digitalRead(kandidaten[i]) ? '1' : '0');
-            Serial.println();
-            delay(250);
-        }
-        Serial.println("+BTN: fertig\r\nOK");
+        for (int i = 0; i < BTN_ANZAHL; i++) Serial.printf("%d ", btnPins[i]);
+        Serial.printf("\r\n+BTN: %d s, alle 250 ms - druecken und halten\r\n", secs);
+        btnBis = millis() + (uint32_t)secs * 1000;
+        btnNaechste = millis();
+        Serial.println("OK");
         return;
     }
     /* Denselben Alarm ohne Knopf ausloesen -- fuer Tests, wenn niemand am
@@ -595,7 +591,7 @@ void setup()
     pinMode(LED_RED, OUTPUT);
     pinMode(LED_BLUE, OUTPUT);
     pinMode(LED_GREEN, OUTPUT);
-    pinMode(PIN_BUTTON, INPUT_PULLUP);   /* Pin unbestaetigt, siehe oben */
+    pinMode(PIN_BUTTON, INPUT_PULLDOWN);   /* active high, Ruhelage LOW */
     digitalWrite(LED_RED, LOW);
     digitalWrite(LED_BLUE, LOW);
     digitalWrite(LED_GREEN, LOW);
@@ -622,6 +618,21 @@ void loop()
         char c = (char)Serial.read();
         if (c == '\n' || c == '\r') { handleLine(line); line = ""; }
         else if (line.length() < 300) line += c;
+    }
+
+    /* Pin-Diagnose haeppchenweise, damit loop() zurueckkehrt und der
+     * Watchdog ruhig bleibt. */
+    if (btnBis) {
+        if ((int32_t)(millis() - btnBis) >= 0) {
+            btnBis = 0;
+            Serial.println("+BTN: fertig");
+        } else if ((int32_t)(millis() - btnNaechste) >= 0) {
+            btnNaechste += 250;
+            Serial.printf("+BTN %5lu ", (unsigned long)millis());
+            for (int i = 0; i < BTN_ANZAHL; i++)
+                Serial.print(digitalRead(btnPins[i]) ? '1' : '0');
+            Serial.println();
+        }
     }
 
     pruefeKnopf();
