@@ -15,8 +15,9 @@
 #include <SPI.h>
 #include <LoRa.h>
 #include <esp_ota_ops.h>
+#include <esp_system.h>
 
-#define FW_VERSION "TrackerD-P2P v2.4"
+#define FW_VERSION "TrackerD-P2P v2.9"
 
 /* Pinbelegung laut Dragino-Pinmapping (README des TrackerD-Repos) */
 #define PIN_SCK    5
@@ -30,30 +31,24 @@
 #define LED_BLUE   2
 #define LED_GREEN 13
 
-/* Der rote Alarmknopf: **GPIO 25, active high, mit PULLDOWN.**
+/* Der rote Alarmknopf: **GPIO 0, active LOW.**
  *
- * Belegt durch TrackerD.ino:1751 -- dort steht
- * esp_sleep_enable_ext1_wakeup(BUTTON_PIN_25, ESP_EXT1_WAKEUP_ANY_HIGH), und
- * dieser Block laeuft immer: dem vorangehenden if (GPIO 0, ALL_LOW, nur fuer
- * cdevaddr <= 25692040) fehlt das else. Bestaetigt an der Luft, der Alarm
- * loeste beim Druck aus.
+ * Ueber die Luft ausgemessen (AT+BTN funkt die Pinmaske, der Pico hoert mit):
+ *   Ruhe      01011000   GPIO0 = 1
+ *   gedrueckt 00011000   GPIO0 = 0
+ * Einzige Aenderung, alle anderen Pins unveraendert. Passt zu
+ * extiButton.h:9 BUTTON_PIN 0 und ESP_EXT1_WAKEUP_ALL_LOW.
  *
- * GPIO 25 ist doppelt belegt -- GPS.h:7 fuehrt ihn als GPS_RESET. Er ist also
- * Ausgang zum GPS *und* Tastereingang; beim GPS-Einbau darf er nicht dauerhaft
- * getrieben werden.
+ * Am Pin haengt ein externer Pullup (Boot-Strapping), Ruhe ist deshalb HIGH.
  *
- * Vier Irrwege, die als Warnung bleiben:
- *   - Ohne Pull-Widerstand gemessen: freischwebende Eingaenge liefern Rauschen,
- *     das wie Flanken aussieht.
- *   - GPIO 0 schien zu folgen, wird aber von der Auto-Reset-Schaltung ueber DTR
- *     getrieben. Mit dtr=False steht er konstant.
- *   - Mit PULLUP gemessen: ein active-high Knopf liest damit gedrueckt wie
- *     losgelassen als 1, der Unterschied ist gar nicht messbar. Das war der
- *     eigentliche Grund, warum GPIO 25 lange stumm schien.
- *   - AT+BTN blockierte sekundenlang in handleLine(); loop() kehrte nie zurueck
- *     und der Task-Watchdog setzte das Geraet zurueck (rst:0x8 TG1WDT_SYS_RESET).
- *     Die Abtastung laeuft deshalb jetzt aus loop(). */
-#define PIN_BUTTON 25
+ * **Nur ueber Funk messbar.** Solange der USB-Port offen ist, treibt die
+ * Auto-Reset-Schaltung GPIO 0 ueber DTR und verdeckt den Knopf vollstaendig --
+ * jede serielle Messung zeigt dann entweder Rauschen oder einen konstanten
+ * Pegel. Genau daran sind alle Versuche ueber die Konsole gescheitert.
+ *
+ * Nicht 25: das ist GPS_RESET (GPS.h:7). extiButtonLS.h nennt zwar
+ * BUTTON_PIN1 25, das gilt an diesem Geraet nicht. */
+#define PIN_BUTTON 0
 
 /* Haltezeit bis zum Alarm. Dragino nimmt dafuer sys.exit_alarm_time, in
  * TrackerD.ino:1301 auf 2000 ms gesetzt -- derselbe Wert, damit der Knopf
@@ -124,9 +119,26 @@ static int      cfgEbyte  = SENDE_BEIDE;
  * AT-Befehl laesst loop() nie zurueckkehren und der Task-Watchdog setzt das
  * Geraet zurueck (rst:0x8 TG1WDT_SYS_RESET). Genau daran sind die ersten
  * Messlaeufe gescheitert -- sie lieferten deshalb gar keine Ausgabe. */
-static const int btnPins[] = { 25, 0, 14, 16, 17, 21, 22, 32 };
+/* 16 und 17 sind hier RAUS: auf dem ESP32-PICO-D4 haengen sie am internen
+ * Speicher. Ein pinMode() darauf laesst die Firmware sofort mit
+ * Interrupt-Watchdog neu starten (Neustartgrund 5) -- das Geraet kam nicht
+ * einmal bis zur Startmeldung und funkte deshalb gar nichts.
+ * Ebenfalls raus: 12 (GPS_POWER), 4/34/35 (Batterie), 6-11 (Flash). */
+static const int btnPins[] = { 25, 0, 14, 21, 22, 32, 33, 36 };
 #define BTN_ANZAHL (int)(sizeof(btnPins) / sizeof(btnPins[0]))
 static uint32_t btnBis = 0, btnNaechste = 0;
+
+/* Pin-Zustaende ueber die Luft melden, statt ueber die serielle Schnittstelle.
+ * Grund: schon das Oeffnen des USB-Ports setzt den ESP32 ueber die
+ * Auto-Reset-Leitungen zurueck -- jedes serielle Kommando landete deshalb im
+ * Bootvorgang. Ueber Funk gemessen faellt das ganze Problem weg.
+ *
+ * Gesendet wird auf dem Rohkanal (SF7/BW125), nicht im Ebyte-Profil: rund
+ * 40 ms Luftzeit statt ueber 300 ms. Das Fenster ist bewusst kurz, damit der
+ * Duty Cycle im 868er Band nicht ueber Gebuehr belastet wird. */
+#define PINTX_INTERVALL 2000UL
+#define PINTX_FENSTER   300000UL   /* 5 min: lang genug, dass das Fenster nicht mitten im Test ablaeuft */
+static uint32_t pinTxBis = 0, pinTxNaechste = 0;
 
 static uint32_t rxCount = 0, txCount = 0;
 
@@ -276,7 +288,7 @@ static void pruefeKnopf()
     static uint32_t seitWann   = 0;
     static bool     gemeldet   = false;
 
-    bool gedrueckt = (digitalRead(PIN_BUTTON) == HIGH);
+    bool gedrueckt = (digitalRead(PIN_BUTTON) == LOW);   /* active low */
 
     if (gedrueckt != letzter) {
         /* Jede Flanke setzt die Uhr zurueck. Das entprellt zugleich: waehrend
@@ -591,7 +603,7 @@ void setup()
     pinMode(LED_RED, OUTPUT);
     pinMode(LED_BLUE, OUTPUT);
     pinMode(LED_GREEN, OUTPUT);
-    pinMode(PIN_BUTTON, INPUT_PULLDOWN);   /* active high, Ruhelage LOW */
+    pinMode(PIN_BUTTON, INPUT_PULLUP);   /* active low, Ruhe HIGH */
     digitalWrite(LED_RED, LOW);
     digitalWrite(LED_BLUE, LOW);
     digitalWrite(LED_GREEN, LOW);
@@ -599,6 +611,17 @@ void setup()
     delay(200);
     Serial.println();
     Serial.println(FW_VERSION);
+    /* Neustartgrund im Klartext. Spart das Raten, wenn das Geraet mitten im
+     * Betrieb neu startet: 6 = Task-Watchdog, 5 = Deep Sleep, 1 = Power-On,
+     * 3 = Software, 4 = Interrupt-Watchdog, 12 = Brownout. */
+    {
+        static const char *grund[] = {
+            "unbekannt", "Power-On", "extern", "Software", "Panik",
+            "Interrupt-WDT", "Task-WDT", "WDT", "Deep-Sleep", "Brownout", "SDIO" };
+        int r = (int)esp_reset_reason();
+        Serial.printf("Neustartgrund: %d (%s)\r\n", r,
+                      (r >= 0 && r <= 10) ? grund[r] : "?");
+    }
 
     SPI.begin(PIN_SCK, PIN_MISO, PIN_MOSI, PIN_NSS);
     LoRa.setPins(PIN_NSS, PIN_RST, PIN_DIO0);
@@ -608,6 +631,17 @@ void setup()
     }
     applyRadio();
     printCfg();
+    /* Diagnosefenster gleich beim Start, damit dafuer kein serielles
+     * Kommando noetig ist -- das wuerde das Geraet nur wieder resetten. */
+    for (int i = 0; i < BTN_ANZAHL; i++) {
+        int p = btnPins[i];
+        pinMode(p, (p >= 34) ? INPUT : INPUT_PULLDOWN);
+    }
+    pinTxBis = millis() + PINTX_FENSTER;
+    pinTxNaechste = millis();
+    Serial.printf("Pin-Funkdiagnose %lu s, Reihenfolge: ", PINTX_FENSTER / 1000);
+    for (int i = 0; i < BTN_ANZAHL; i++) Serial.printf("%d ", btnPins[i]);
+    Serial.println();
     Serial.println("bereit - AT+CFG zeigt alles, AT+LORAWAN geht zurueck");
 }
 
@@ -632,6 +666,24 @@ void loop()
             for (int i = 0; i < BTN_ANZAHL; i++)
                 Serial.print(digitalRead(btnPins[i]) ? '1' : '0');
             Serial.println();
+        }
+    }
+
+    /* Pin-Zustaende funken, solange das Fenster laeuft. */
+    if (pinTxBis) {
+        if ((int32_t)(millis() - pinTxBis) >= 0) {
+            pinTxBis = 0;
+        } else if ((int32_t)(millis() - pinTxNaechste) >= 0) {
+            pinTxNaechste = millis() + PINTX_INTERVALL;
+            uint8_t maske = 0;
+            for (int i = 0; i < BTN_ANZAHL; i++)
+                if (digitalRead(btnPins[i])) maske |= (1 << i);
+            char txt[16];
+            snprintf(txt, sizeof(txt), "PIN%02X", maske);
+            int alt = cfgEbyte;
+            cfgEbyte = SENDE_ROH;          /* kurze Luftzeit fuer die Diagnose */
+            sendPacket((const uint8_t *)txt, strlen(txt));
+            cfgEbyte = alt;
         }
     }
 
