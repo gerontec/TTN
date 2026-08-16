@@ -76,8 +76,8 @@
             "chan_multiSF_6": {"enable": true, "radio": 0, "if":  200000,"desc": "Lora MAC, 125kHz, all SF, 867.7 MHz"},
             "chan_multiSF_7": {"enable": true, "radio": 0, "if":  400000,"desc": "Lora MAC, 125kHz, all SF, 867.9 MHz"},
 
-            "chan_Lora_std":  {"enable": true, "radio": 1, "if": -200000, "bandwidth": 250000, "spread_factor": 7,
-                               "implicit_hdr": false, "implicit_payload_length": 17, "implicit_crc_en": false, "implicit_coderate": 1,"desc": "Lora MAC, 250kHz, SF7, 868.3 MHz"},
+            "chan_Lora_std":  {"enable": true, "radio": 1, "if": -375000, "bandwidth": 125000, "spread_factor": 7,
+                               "implicit_hdr": false, "implicit_payload_length": 17, "implicit_crc_en": false, "implicit_coderate": 1,"desc": "RAW P2P, 125kHz, SF7, 868.125 MHz (TrackerD)"},
             
             "chan_FSK":       {"enable": true, "radio": 1, "if":  300000, "bandwidth": 125000, "datarate": 50000,"desc": "FSK 50kbps, 868.8 MHz"}
         }

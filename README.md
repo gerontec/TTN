@@ -29,19 +29,24 @@ offene Punkte, geschrieben als Wiederaufsetzpunkt.
    |  Dragino DLOS8N           |  fwd -d sx1302 (Semtech-UDP-Forwarder)
    |  im Heimnetz an eth1      |
    +---------------------------+
-        |                    |
-        | server1            | server2
-        | Internet (optional)| LAN, direkt (1,2 ms)
-        v                    v
-  eu1.cloud.thethings   +----------------------+
-    .network:1700       | dell-3660            |
-   (The Things Network) | 192.168.5.23         |
+        |                    |                    |
+        | server1            | server2            | server3
+        | Internet (optional)| LAN, direkt (1,2 ms)| LAN, roh
+        v                    v                    v
+  eu1.cloud.thethings   +----------------------+  :1702
+    .network:1700       | dell-3660            |  lora_raw.py
+   (The Things Network) | 192.168.5.23         |  -> MQTT lora/raw
                         | ChirpStack :8090     |
                         | mosquitto :1883      |
                         +----------------------+
                           Dieser Weg braucht weder Internet
                           noch Tunnel. Er ist der Normalbetrieb.
 ```
+
+Neben der LoRaWAN-Kette hängt ein **roher Kanal** für P2P-Verkehr
+(`chan_Lora_std`, 868.125 MHz, SF7, BW125) — ChirpStack verwirft solche Pakete
+mangels gültigem LoRaWAN-Rahmen, deshalb wird daneben abgegriffen und nicht
+dahinter. Aufbau, Fallen und Messungen: **[gateway/RAWKANAL.md](gateway/RAWKANAL.md)**.
 
 **Kein Tunnel im Pfad.** Das Gateway erreicht `192.168.5.23` direkt über das
 LAN. Frühere Aufbauten hingen an WireGuard und einem Server im Internet; beides

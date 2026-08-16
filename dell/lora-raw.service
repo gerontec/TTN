@@ -1,0 +1,17 @@
+[Unit]
+Description=Roh-LoRa-Abgriff: server3 des DLOS8N auf UDP 1702, neben der LoRaWAN-Kette
+Documentation=https://github.com/gerontec/TTN
+After=network-online.target mosquitto.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=gh
+Group=gh
+ExecStart=/usr/bin/python3 /home/gh/python/lora_raw.py --mqtt
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -30,13 +30,16 @@
 #define LED_BLUE   2
 #define LED_GREEN 13
 
-/* Defaults: EU868, passend zur Werkseinstellung des EByte E22 (Syncword 0x12) */
+/* Defaults: EU868, passend zum Rohkanal des DLOS8N (chan_Lora_std, 868.125 MHz,
+ * SF7, BW125).  Syncword 0x34 statt des privaten 0x12: der SX1302 kennt nur ein
+ * Syncword fuer den ganzen Chip (lorawan_public), ein Node mit 0x12 wird vom
+ * Gateway schlicht nicht gehoert.  Siehe gateway/RAWKANAL.md. */
 static long     cfgFreq   = 868125000;
 static int      cfgSf     = 7;
 static long     cfgBw     = 125000;
 static int      cfgCr     = 5;      /* 5..8 entspricht 4/5..4/8 */
-static int      cfgPower  = 17;     /* dBm, PA_BOOST */
-static int      cfgSync   = 0x12;
+static int      cfgPower  = 17;     /* dBm, PA_BOOST -- siehe RAWKANAL.md, 868.0-868.6 erlaubt 25 mW (14 dBm) */
+static int      cfgSync   = 0x34;
 static int      cfgPre    = 8;
 static bool     cfgCrc    = true;
 static bool     rxEnabled = true;

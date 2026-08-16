@@ -1,0 +1,34 @@
+--- /tmp/claude-1000/-home-gh-python/3085ae7f-15db-4504-966c-d8d2a284cc23/scratchpad/gc-orig.sh	2026-08-16 09:17:39.435768883 +0200
++++ /tmp/claude-1000/-home-gh-python/3085ae7f-15db-4504-966c-d8d2a284cc23/scratchpad/generate-config.sh	2026-08-16 09:10:10.808299188 +0200
+@@ -156,7 +156,30 @@
+                 json_add_boolean "forward_crc_valid" 1
+                 json_add_boolean "forward_crc_error" 0
+                 json_add_boolean "forward_crc_disabled" 0
+-                json_close_object 
++                json_close_object
++        fi
++        if [ "`uci -q get gateway.server3.enable`" = "1" ]; then
++                #Server3 -- Roh-LoRa-Abgriff neben der LoRaWAN-Kette (nicht dahinter).
++                #Bekommt wie jeder Server saemtliche rxpk; gefiltert wird auf der Gegenseite.
++                json_add_object "server3"
++                json_add_string "server_name" "`uci -q get gateway.server3.server_id`"
++                json_add_string "server_type" "semtech"
++                json_add_string "server_address" "`uci -q get gateway.server3.server_address`"
++                json_add_int "serv_port_up" "`uci -q get gateway.server3.upp`"
++                json_add_int "serv_port_down" "`uci -q get gateway.server3.dpp`"
++
++                json_add_int "keepalive_interval" "30"
++                json_add_int "push_timeout_ms" "100"
++                json_add_int "pull_timeout_ms" "100"
++
++                json_add_int "fport_filter" "0"
++                json_add_int "devaddr_filter" "0"
++                json_add_int "nwkid_filter" "0"
++                json_add_int "deveui_filter" "0"
++                json_add_boolean "forward_crc_valid" 1
++                json_add_boolean "forward_crc_error" "`uci -q get gateway.server3.forward_crc_error`"
++                json_add_boolean "forward_crc_disabled" "`uci -q get gateway.server3.forward_crc_disabled`"
++                json_close_object
+         fi
+         json_close_array
+ 

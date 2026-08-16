@@ -55,6 +55,11 @@ Umschaltungen scheitern genau dann, wenn man sie braucht.
   `switch_app.py`, Umschaltung in 1,4 s über otadata).
 * **Raw-LoRa kommt am Gateway an**: P2P-Pakete mit Syncword `0x34` auf einem
   konfigurierten Kanal landen als `rxpk.data` im Semtech-UDP-Strom.
+* **Der Rohkanal ist gebaut und nutzbar** (16.08.): `chan_Lora_std` liegt auf
+  868.125 MHz / SF7 / BW125, ein dritter Forwarder-Server schiebt alles roh auf
+  `192.168.5.23:1702`, wo `lora_raw.py` als `lora-raw.service` mithört und auf
+  `lora/raw` veröffentlicht. Ganze Herleitung samt Persistenz-Fallen:
+  **[gateway/RAWKANAL.md](gateway/RAWKANAL.md)**.
 
 ## Stolperstellen
 
@@ -95,6 +100,12 @@ Umschaltungen scheitern genau dann, wenn man sie braucht.
   erneut einen Join aus, wird die im TTN hinterlegte Sitzung ungültig und muss
   nachgezogen werden.
 * Die P2P-Firmware des TrackerD könnte ihre Parameter im NVS ablegen, damit sie
-  einen Reset überleben.
+  einen Reset überleben. Bis dahin trägt der Quelltext die Vorgaben: `cfgSync`
+  steht jetzt auf `0x34`, sonst hört das Gateway den Node nach jedem Reset nicht
+  mehr. **Noch nicht neu geflasht** — TrackerD war beim Umbau nicht angesteckt.
+* Sendeweg des Rohkanals (`lora_raw.py --send`) ist ungeprüft, ebenso der
+  Funkweg über die neue Frequenz 868.125 MHz.
+* Sendeleistung des TrackerD steht auf 17 dBm ≈ 50 mW und liegt damit über den
+  25 mW ERP, die in 868.0–868.6 MHz erlaubt sind — auf 14 dBm entscheiden.
 * Storage-Integration im TTN ist nicht aktiviert; Uplinks lassen sich dort
   derzeit nur über die Frame-Counter (`ttn/ttn_show.py`) nachweisen.
