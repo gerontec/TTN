@@ -562,13 +562,43 @@ E22 EMPFANGEN: b'PICO-SF11BW500\xdc'
 Das Modul entpackt den Ebyte-Kopf selbst und hängt das RSSI-Byte an
 (`\xdc` = −110 dBm).
 
-## Empfangspfad prüfen, bevor man die Konfiguration verdächtigt
+## Adresse 0xFFFF: der Empfänger muss im Monitor stehen
 
-Beim ersten Aufbau hörte das E22 den TrackerD nicht, obwohl der Pico ihn mit
-−19 dBm empfing. Die Konfiguration war aber in Ordnung — der Pico kam
-unmittelbar daneben nur mit **−110 dBm** an. Rund 90 dB Dämpfung auf
-kürzester Strecke heißt: Antenne fehlt oder sitzt nicht.
+**Der Werkswert `0xFFFF` ist kein Zufall, sondern Voraussetzung.** Bei Ebyte
+heißt er Monitor bzw. Broadcast: das Modul nimmt alles auf seinem Kanal an.
+Wer die Adresse auf den Wert des Senders setzt — hier `0x0000`, wie ihn der
+TrackerD in seine Rahmen schreibt —, schaltet den Adressfilter scharf und der
+Empfang hört auf:
 
-Der Test dafür ist billig und eindeutig: **eine bekannte Quelle direkt daneben
-senden lassen und den gemeldeten RSSI ansehen.** Ohne diese Referenz sucht man
-den Fehler in der Konfiguration, wo keiner ist.
+| Adresse des E22 | TrackerD → E22 |
+|---|---|
+| `0xFFFF` (Werk, Monitor) | empfängt |
+| `0x0000` | **nichts** |
+
+Ein reiner Zuhörer bleibt also auf `0xFFFF`. Nur NETID und Kanal müssen
+übereinstimmen.
+
+Verifiziert: `b'076C>ALARM,T34.8,H34.1'` — der Alarm des TrackerD samt
+Temperatur und Feuchte, am E22 seriell herausgekommen.
+
+## Zwei Irrwege bei der Fehlersuche
+
+**Das angehängte RSSI-Byte taugt nicht als Pegelmessung.** Mit eingeschaltetem
+Umgebungs-RSSI (`REG1` Bit 5) liefert es plausibel den *Rauschflur* statt der
+Empfangsstärke. Aus einem so gelesenen `-110 dBm` habe ich auf eine defekte
+Antenne geschlossen und den Antennenwechsel empfohlen — falsch. Auch mit
+abgeschaltetem Umgebungs-RSSI meldet das Modul für ein sauber dekodiertes
+Paket noch `-111 dBm`, während der Pico denselben Sender mit `-19 dBm` hört.
+Die 92 dB Unterschied sind nicht erklärt; der Wert ist als Größenordnung
+unbrauchbar.
+
+**Antenne über den Sendepfad prüfen, nicht über RSSI.** Eine Antenne arbeitet
+in beide Richtungen gleich. In transparentem Modus geht alles, was man in den
+UART schreibt, auf die Luft — kommt es bei einer Gegenstelle kräftig an, ist
+die Antenne in Ordnung und der Fehler liegt woanders:
+
+```
+E22 sendet ueber seinen UART  ->  Pico empfaengt  -34 dBm
+```
+
+Das entlastet die Antenne in einem Schritt und hätte den Umweg erspart.
