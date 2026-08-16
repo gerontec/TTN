@@ -1,0 +1,221 @@
+from machine import Pin, SPI
+import utime
+
+# Initialize SPI with correct pins and mode
+spi = SPI(1, baudrate=1000000, polarity=1, phase=1, bits=8, sck=Pin(10), mosi=Pin(11), miso=Pin(12))
+
+# Define CS, BUSY, and RESET pins
+cs = Pin(3, Pin.OUT, value=1)
+busy = Pin(2, Pin.IN)
+reset = Pin(15, Pin.OUT, value=1)
+
+# SX1262 OpCodes
+OPCODE_SET_STANDBY = 0x80
+OPCODE_SET_PACKET_TYPE = 0x8A
+OPCODE_SET_RF_FREQUENCY = 0x86
+OPCODE_SET_MODULATION_PARAMS = 0x8B
+OPCODE_SET_PA_CONFIG = 0x95
+OPCODE_SET_TX_PARAMS = 0x8E
+OPCODE_READ_REGISTER = 0x1D
+
+# Constants
+SX126X_XTAL_FREQ = 32000000  # Crystal frequency in Hz
+
+# Set readonly variable (1 for read-only, 0 for read/write)
+readonly = 0  # Change to 1 for read-only mode
+
+def reset_module():
+    print("Resetting module...")
+    reset.value(0)
+    utime.sleep_ms(100)
+    reset.value(1)
+    utime.sleep_ms(200)
+    print("Reset complete. BUSY pin state:", busy.value())
+
+def wait_on_busy():
+    timeout = 1000
+    start = utime.ticks_ms()
+    while busy.value():
+        if utime.ticks_diff(utime.ticks_ms(), start) > timeout:
+            print("Error: BUSY timeout")
+            return False
+        utime.sleep_ms(1)
+    return True
+
+def spi_transfer(data):
+    print(f"SPI transfer: {', '.join(hex(b) for b in data)}")
+    cs.value(0)
+    utime.sleep_ms(5)
+    result = bytearray(len(data))
+    spi.write_readinto(data, result)
+    utime.sleep_ms(5)
+    cs.value(1)
+    
+    if not wait_on_busy():
+        print("SPI transfer failed: BUSY timeout")
+        return None
+    
+    print(f"SPI result: {', '.join(hex(b) for b in result)}")
+    utime.sleep_ms(10)
+    return result
+
+def set_standby():
+    print("Setting standby mode...")
+    return spi_transfer(bytearray([OPCODE_SET_STANDBY, 0x00]))
+
+def set_packet_type():
+    print("Setting packet type to LoRa...")
+    return spi_transfer(bytearray([OPCODE_SET_PACKET_TYPE, 0x01]))
+
+def calculate_pll_step(freq_mhz):
+    """ Calculate PLL step from frequency in MHz """
+    freq_hz = freq_mhz * 1_000_000  # Convert MHz to Hz
+    pll_step = int((freq_hz * (2 ** 25)) / SX126X_XTAL_FREQ)  # Calculate PLL step value
+    return pll_step
+
+def set_frequency(freq_mhz):
+    pll_step = calculate_pll_step(freq_mhz)
+    
+    print(f"Setting frequency to {freq_mhz:.2f} MHz (Calculated PLL Step: {pll_step})")
+    
+    result = spi_transfer(bytearray([OPCODE_SET_RF_FREQUENCY,
+                                      (pll_step >> 24) & 0xFF,
+                                      (pll_step >> 16) & 0xFF,
+                                      (pll_step >> 8) & 0xFF,
+                                      pll_step & 0xFF]))
+    
+    if result:
+        print("Frequency set command sent successfully.")
+        utime.sleep_ms(1000)  # Increased delay for processing
+
+def set_modulation_params(spreading_factor=7, bandwidth=125, coding_rate=5):
+    print(f"Setting modulation parameters: SF={spreading_factor}, BW={bandwidth} kHz, CR={coding_rate}/5")
+    
+    return spi_transfer(bytearray([OPCODE_SET_MODULATION_PARAMS, spreading_factor, bandwidth // 10, coding_rate]))
+
+def set_pa_config():
+    print("Setting PA config...")
+    
+    return spi_transfer(bytearray([OPCODE_SET_PA_CONFIG, 0x04, 0x07, 0x00, 0x01]))
+
+def set_tx_params():
+    print("Setting TX parameters...")
+    
+    return spi_transfer(bytearray([OPCODE_SET_TX_PARAMS, 0x16, 0x00])) 
+
+def read_register(address):
+    print(f"Reading register at address: {hex(address)}")
+    
+    data = bytearray([OPCODE_READ_REGISTER, (address >> 8) & 0xFF, address & 0xFF])
+    
+    result = spi_transfer(data)
+    
+    if result is None:
+        print("Failed to read register")
+        return None
+    
+    return result[2:]  # Return only relevant data bytes
+
+def read_frequency():
+    freq_bytes = read_register(0x0891)
+
+    if freq_bytes:
+        freq = int.from_bytes(freq_bytes[:4], 'big')  
+        freq_mhz = (freq * SX126X_XTAL_FREQ) / (2**25)
+        print(f"Current frequency: {freq_mhz:.2f} MHz")
+
+        if freq_mhz == 0:
+            print("Warning: Frequency read back is zero.")
+        
+        return freq_mhz
+    
+    else:
+        print("Failed to read frequency")
+
+def check_module_presence():
+    print("Checking module presence...")
+    
+    version = read_register(0x0042) 
+    
+    if version:
+        print(f"Module detected. Version: {version.hex()}")
+
+def read_status():
+    print("Reading status register...")
+    
+    status = spi_transfer(bytearray([0xC0, 0x00]))
+    
+    if status:
+        print(f"Status: {status[1]:08b}")
+
+def read_other_registers():
+    # Example: Read register at address 0x0890
+    print("Reading register at address: 0x0890")
+    
+    result = read_register(0x0890)
+    
+    if result:
+        print(f"Register 0x0890 content: {[hex(b) for b in result]}")
+
+def send_message(message):
+   """ Send a message over LoRa air """
+   message_bytes = message.encode('utf-8')[:240] # Limit to max payload size of LoRa packets
+   length = len(message_bytes)
+
+   # Prepare the packet for transmission (this may vary based on your implementation)
+   tx_data = bytearray([length]) + message_bytes  
+
+   # Send the packet using appropriate command (replace with actual opcode for sending packet)
+   print(f"Sending message: '{message}' ({length} bytes)")
+   spi_transfer(tx_data)
+
+def read_rssi():
+   """ Read the RSSI value from the SX1262 """
+   # Read the packet status register after receiving a packet
+   packet_status = read_register(0x1D)
+
+   if packet_status:
+       # The RSSI value is typically found in a specific part of the packet status
+       rssi_value = -((packet_status[1] >> 1) + 164) # Example adjustment based on your setup
+       print(f"Received Signal Strength Indicator (RSSI): {rssi_value} dBm")
+       return rssi_value
+   else:
+       print("Failed to read RSSI")
+       return None
+
+# Main execution
+print("Starting LoRa configuration...")
+reset_module()
+read_status()
+check_module_presence()
+set_standby()
+set_packet_type()
+
+if readonly > 0:
+   # Only read configuration without setting values
+   print("Read-only mode activated. Configuration will be read only.")
+   read_frequency()      
+else:
+   # Set values if not in read-only mode
+   set_frequency(868.0)   # Set desired frequency in MHz
+   utime.sleep_ms(1000)  
+   read_status()         
+   read_frequency()      
+   set_modulation_params() 
+   set_pa_config()
+   set_tx_params()
+
+# Read additional registers for diagnostics
+read_other_registers()  
+read_frequency()      
+
+# Send "hello sx1262" message multiple times
+for i in range(2):
+   send_message("hello sx1262")  
+   utime.sleep_ms(100) # Delay between messages
+
+# Read RSSI after sending messages
+read_rssi()
+
+print("LoRa configuration complete.")
+
