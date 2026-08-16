@@ -16,7 +16,7 @@
 #include <LoRa.h>
 #include <esp_ota_ops.h>
 
-#define FW_VERSION "TrackerD-P2P v2.0"
+#define FW_VERSION "TrackerD-P2P v2.1"
 
 /* Pinbelegung laut Dragino-Pinmapping (README des TrackerD-Repos) */
 #define PIN_SCK    5
@@ -32,23 +32,23 @@
 
 /* Der rote Alarmknopf -- **Pin noch nicht gefunden, der Knopf loest nicht aus.**
  *
- * Dragino nennt zwei: extiButtonLS.h:9 BUTTON_PIN1 25 (fuer sensor_type 13,
- * also dieses Geraet) und extiButton.h:9 BUTTON_PIN 0. TrackerD.ino fuehrt
- * beide als ext1-Wakeup-Masken (0x1 und 0x2000000).
+ * Wichtig, weil es die naheliegende Spur entwertet: **GPIO 25 ist nicht der
+ * Knopf, sondern GPS_RESET** (GPS.h:7), und GPIO 12 ist GPS_POWER (GPS.h:6).
+ * extiButtonLS.h:9 nennt zwar BUTTON_PIN1 25, das gilt an diesem Geraet nicht.
+ * Die zweite Dragino-Variante extiButton.h:9 nennt BUTTON_PIN 0.
  *
- * Gemessen mit AT+BTN, alle Kandidaten gleichzeitig mit Pullup, waehrend der
- * Knopf 12 s durchgehend gehalten wurde: 48 von 49 Momentaufnahmen identisch.
- * Weder 25 noch 0, 32, 33, 34, 35, 36, 39 ruehren sich.
+ * Drei Irrwege, die dokumentiert bleiben sollen:
+ *   - Ohne Pull-Widerstand gemessen: freischwebende Eingaenge liefern Rauschen,
+ *     das wie Flanken aussieht. GPIO 0 und 33 zeigten Wechsel, die keine waren.
+ *   - GPIO 0 schien danach zu folgen, wird aber von der Auto-Reset-Schaltung
+ *     ueber DTR getrieben. Mit dtr=False steht er konstant.
+ *   - Mit **Pullup** gemessen, obwohl Dragino den Knopf als active high angibt
+ *     (OneButton(pin, false, false)). Ein active-high Knopf liest am Pullup
+ *     gedrueckt wie losgelassen als 1 -- der Unterschied ist gar nicht messbar.
+ *     AT+BTN misst deshalb jetzt mit PULLDOWN.
  *
- * Zwei Irrwege, die dokumentiert bleiben sollen:
- *   - Erste Messung ohne Pullup: freischwebende Eingaenge liefern Rauschen,
- *     das wie Flanken aussieht. Immer mit Pull messen.
- *   - GPIO 0 schien zu folgen, wird aber von der Auto-Reset-Schaltung ueber
- *     DTR getrieben. Mit s.dtr=False steht er konstant -- es war der Adapter,
- *     nicht der Knopf.
- *
- * Naechster Schritt: die restlichen freien Pins absuchen (4, 12, 14, 16, 17,
- * 21, 22) oder das Geraet oeffnen. Bis dahin loest nur AT+ALARM aus. */
+ * Naechster Schritt: AT+BTN mit den freien Pins (0, 14, 16, 17, 21, 22, 32, 33)
+ * gegen einen laengeren Druck laufen lassen. Bis dahin loest nur AT+ALARM aus. */
 #define PIN_BUTTON 25
 
 /* Haltezeit bis zum Alarm. Dragino nimmt dafuer sys.exit_alarm_time, in
@@ -543,7 +543,10 @@ static void handleLine(String line)
      * Die Kandidaten sind freie Pins; SPI (5,18,19,23,26,27), LEDs (2,13,15)
      * und Flash (6-11) bleiben aussen vor. */
     if ((a = argOf(line, "AT+BTN"))) {
-        static const int kandidaten[] = { 0, 25, 32, 33, 34, 35, 36, 39 };
+        /* 12 und 25 sind raus: GPS_POWER und GPS_RESET (GPS.h), also Ausgaenge.
+         * 34/35 sind die Batteriemessung (BAT_PIN_READ1/BAT_PIN_READ), 4 ist
+         * BAT_PIN_LOW. Es bleiben die wirklich freien Pins. */
+        static const int kandidaten[] = { 0, 14, 16, 17, 21, 22, 32, 33 };
         const int anzahl = sizeof(kandidaten) / sizeof(kandidaten[0]);
         int secs = *a ? atoi(a) : 15;
         if (secs < 1) secs = 1;
@@ -552,9 +555,13 @@ static void handleLine(String line)
          * statt des Knopfes. GPIO34-39 sind reine Eingaenge ohne interne
          * Widerstaende -- die bleiben zwangslaeufig offen und sind hier nur
          * der Vollstaendigkeit halber dabei. */
+        /* PULLDOWN, nicht PULLUP: Dragino gibt den Knopf als active high an
+         * (OneButton(pin, false, false)). Mit Pullup liest ein active-high
+         * Knopf gedrueckt wie losgelassen als 1 -- der Unterschied ist dann
+         * gar nicht messbar. Das war der Fehler der ersten Suchlaeufe. */
         for (int i = 0; i < anzahl; i++) {
             int p = kandidaten[i];
-            pinMode(p, (p >= 34) ? INPUT : INPUT_PULLUP);
+            pinMode(p, (p >= 34) ? INPUT : INPUT_PULLDOWN);
         }
         delay(20);
         Serial.print("+BTN: Pins ");
