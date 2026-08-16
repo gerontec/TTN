@@ -79,6 +79,7 @@ class SX1262:
         self.cs = Pin(PIN_CS, Pin.OUT, value=1)
         self.busy = Pin(PIN_BUSY, Pin.IN)
         self.rst = Pin(PIN_RESET, Pin.OUT, value=1)
+        self.sf, self.bw, self.cr = SF, BW_HZ, CR   # bis set_modulation laeuft
         self.dio1 = Pin(PIN_DIO1, Pin.IN)
 
     # -- Bustransport ------------------------------------------------------
@@ -158,6 +159,8 @@ class SX1262:
         # Low Data Rate Optimize ist Pflicht, sobald ein Symbol > 16 ms dauert
         ldro = 1 if (1 << sf) / (bw / 1000.0) > 16.0 else 0
         self.cmd([SET_MODULATION_PARAMS, sf, BW_TABLE[bw], cr, ldro])
+        # merken, damit send() seine Zeitschranke an die Luftzeit anpassen kann
+        self.sf, self.bw, self.cr = sf, bw, cr
 
     def set_syncword(self, sw):
         # 0x34 -> 0x3444, 0x12 -> 0x1424: das untere Nibble wird auf 4 gezogen
@@ -184,15 +187,23 @@ class SX1262:
         self.cmd([SET_DIO_IRQ_PARAMS,
                   0x02, 0x01, 0x02, 0x01, 0x00, 0x00, 0x00, 0x00])
         self.cmd([CLEAR_IRQ_STATUS, 0xFF, 0xFF])
-        self.cmd([SET_TX, 0x00, 0xF4, 0x24])              # ~1 s Notbremse
 
+        # Notbremse aus der Luftzeit ableiten, nicht fest verdrahten: ein
+        # SF12-Paket dauert ueber 1,5 s und wuerde von einer starren 1-s-Schranke
+        # mitten im Senden abgebrochen. Einheit sind 15.625 us, also ms * 64.
+        luft = airtime_ms(len(payload), sf=self.sf, bw=self.bw, cr=self.cr)
+        schritte = min(0xFFFFFF, int(luft * 3 * 64))
+        self.cmd([SET_TX, (schritte >> 16) & 0xFF,
+                  (schritte >> 8) & 0xFF, schritte & 0xFF])
+
+        grenze = int(luft * 3) + 1000
         t = utime.ticks_ms()
         while True:
             irq = self.irq()
             if irq & IRQ_TX_DONE:
                 self.cmd([CLEAR_IRQ_STATUS, 0xFF, 0xFF])
                 return True
-            if irq & IRQ_TIMEOUT or utime.ticks_diff(utime.ticks_ms(), t) > 5000:
+            if irq & IRQ_TIMEOUT or utime.ticks_diff(utime.ticks_ms(), t) > grenze:
                 self.cmd([CLEAR_IRQ_STATUS, 0xFF, 0xFF])
                 return False
             utime.sleep_ms(2)
