@@ -1,0 +1,121 @@
+/* Relaisstelle Brauneck -- Uebersicht der Betriebsarten
+ * Rendern:  dot -Tpdf relais_uebersicht.dot -o relais_uebersicht.pdf
+ */
+digraph relais {
+    rankdir=TB;
+    bgcolor="white";
+    compound=true;
+    fontname="Helvetica";
+    node [fontname="Helvetica", fontsize=10];
+    edge [fontname="Helvetica", fontsize=9];
+    graph [fontname="Helvetica", fontsize=11];
+
+    /* ---------------- Tal 2 ---------------- */
+    subgraph cluster_tal2 {
+        label="Tal 2 — Bad Heilbrunn  (~640 m)";
+        style="rounded,filled"; fillcolor="#eef4fb"; color="#5b8db8";
+        bh [label="Empfangsstation\n(noch nicht aufgebaut)",
+            shape=box, style="rounded,filled,dashed", fillcolor="#ffffff",
+            color="#888888", fontcolor="#555555"];
+    }
+
+    /* ---------------- Berg ---------------- */
+    subgraph cluster_berg {
+        label="Berg Brauneck  (~1550 m)  — Sichtverbindung in beide Taeler";
+        style="rounded,filled"; fillcolor="#fdf3e3"; color="#c8922a";
+
+        pico [label=<<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="2">
+              <TR><TD><B>Pico + Waveshare SX1262</B></TD></TR>
+              <TR><TD>MicroPython 1.28, 48 MHz</TD></TR>
+              <TR><TD>h&#246;rt <B>nur</B> 868.125 SF7</TD></TR>
+              <TR><TD>solar, ohne Puffer</TD></TR>
+              </TABLE>>,
+              shape=box, style="rounded,filled", fillcolor="#ffffff",
+              color="#c8922a", penwidth=2];
+
+        nodes [label="Nodes am Berg\nTrackerD u. a.\n868.125 SF7, Sync 0x34",
+               shape=box, style="rounded,filled", fillcolor="#ffffff",
+               color="#c8922a"];
+    }
+
+    /* ---------------- Tal 1 ---------------- */
+    subgraph cluster_tal1 {
+        label="Tal 1 — Lenggries  (~680 m)";
+        style="rounded,filled"; fillcolor="#eef7ee"; color="#4a8f4a";
+
+        gw [label="DLOS8N Gateway\nchan_Lora_std 868.125 SF7\nserver3 → UDP 1702",
+            shape=box, style="rounded,filled", fillcolor="#ffffff", color="#4a8f4a"];
+        dell [label="dell-3660  192.168.5.23\nlora_raw.py  ·  lora_cmd.py\nChirpStack, mosquitto",
+              shape=box, style="rounded,filled", fillcolor="#ffffff", color="#4a8f4a"];
+    }
+
+    /* ---------------- Betriebsart 1 ---------------- */
+    nodes -> pico [label="  ① Uplink vom Feld\l  868.125 SF7\l  unmarkiert\l",
+                   color="#1b6ec2", fontcolor="#1b6ec2", penwidth=2];
+    pico -> gw [label="  weitergegeben als \"R1>…\"\l  868.125 SF7, 14 dBm\l  gemessen: RSSI -101\l",
+                color="#1b6ec2", fontcolor="#1b6ec2", penwidth=2];
+    gw -> dell [label="  Semtech-UDP 1702\l  roh, unentschlüsselt\l",
+                color="#4a8f4a", fontcolor="#4a8f4a"];
+
+    /* ---------------- Betriebsart 2 ---------------- */
+    dell -> gw [label="  ② Rundspruch \"L>…\"\l  bzw. Befehl \"C>…\"\l  via 127.0.0.1:1703\l",
+                color="#c25a1b", fontcolor="#c25a1b"];
+    gw -> pico [label="  868.125 SF7, 14 dBm\l",
+                color="#c25a1b", fontcolor="#c25a1b", penwidth=2];
+    pico -> bh [label="  Tal 1 → Tal 2\l  869.525 SF12, bis 22 dBm\l  500 mW / 10 % erlaubt\l  Reserve ≈ 52 dB auf 10 km\l",
+                color="#c25a1b", fontcolor="#c25a1b", penwidth=2];
+
+    /* ---------------- fehlende Gegenrichtung ---------------- */
+    bh -> pico [label="  ③ Tal 2 → Tal 1\l  NICHT IMPLEMENTIERT\l  ein Funkmodul kann nur\l  einen Kanal hören\l",
+                style=dashed, color="#c0392b", fontcolor="#c0392b", penwidth=2,
+                constraint=false];
+
+    /* ---------------- Antwortweg Fernwirken ---------------- */
+    pico -> gw [label="  Antwort \"A>…\"\l  Quittung \"R9>BRAUNECK…\"\l  868.125 SF7\l",
+                style=dotted, color="#7a4fbf", fontcolor="#7a4fbf"];
+
+    /* ---------------- Erlaeuterungen ---------------- */
+    regeln [shape=none, margin=0, label=<
+      <TABLE BORDER="1" CELLBORDER="0" CELLSPACING="4" CELLPADDING="3" COLOR="#999999">
+      <TR><TD COLSPAN="2" ALIGN="LEFT"><B>Richtungsentscheidung nach Nutzlast</B></TD></TR>
+      <TR><TD ALIGN="LEFT"><FONT FACE="Courier">L&gt;</FONT></TD>
+          <TD ALIGN="LEFT">aus dem Tal &#8594; hinaus, 869.525 SF12</TD></TR>
+      <TR><TD ALIGN="LEFT"><FONT FACE="Courier">C&gt;</FONT></TD>
+          <TD ALIGN="LEFT">Fernwirkbefehl &#8594; ausgef&#252;hrt, nie weitergegeben</TD></TR>
+      <TR><TD ALIGN="LEFT"><FONT FACE="Courier">A&gt;</FONT></TD>
+          <TD ALIGN="LEFT">Antwort &#8594; ignoriert</TD></TR>
+      <TR><TD ALIGN="LEFT"><FONT FACE="Courier">R&lt;n&gt;&gt;</FONT></TD>
+          <TD ALIGN="LEFT">schon weitergegeben &#8594; verworfen</TD></TR>
+      <TR><TD ALIGN="LEFT">sonst</TD>
+          <TD ALIGN="LEFT">Uplink vom Feld &#8594; nach Lenggries</TD></TR>
+      <TR><TD COLSPAN="2" ALIGN="LEFT"> </TD></TR>
+      <TR><TD COLSPAN="2" ALIGN="LEFT"><B>Kein Eigenecho</B></TD></TR>
+      <TR><TD ALIGN="LEFT">talw&#228;rts</TD>
+          <TD ALIGN="LEFT">physikalisch: andere Frequenz <B>und</B> SF<BR ALIGN="LEFT"/>SF sind quasi-orthogonal</TD></TR>
+      <TR><TD ALIGN="LEFT">bergw&#228;rts</TD>
+          <TD ALIGN="LEFT">Marker + Dublettensperre 5 min</TD></TR>
+      </TABLE>>];
+
+    technik [shape=none, margin=0, label=<
+      <TABLE BORDER="1" CELLBORDER="0" CELLSPACING="4" CELLPADDING="3" COLOR="#999999">
+      <TR><TD COLSPAN="2" ALIGN="LEFT"><B>Fernwirken von 192.168.5.23</B></TD></TR>
+      <TR><TD ALIGN="LEFT"><FONT FACE="Courier">POWER 2..22</FONT></TD><TD ALIGN="LEFT">dBm talw&#228;rts</TD></TR>
+      <TR><TD ALIGN="LEFT"><FONT FACE="Courier">SF 7..12</FONT></TD><TD ALIGN="LEFT">Spreizfaktor</TD></TR>
+      <TR><TD ALIGN="LEFT"><FONT FACE="Courier">FREQ</FONT></TD><TD ALIGN="LEFT">863..870 MHz</TD></TR>
+      <TR><TD ALIGN="LEFT"><FONT FACE="Courier">STATUS RELAY TELEM</FONT></TD><TD ALIGN="LEFT">Zust&#228;nde</TD></TR>
+      <TR><TD ALIGN="LEFT"><FONT FACE="Courier">SAVE REBOOT PING</FONT></TD><TD ALIGN="LEFT"></TD></TR>
+      <TR><TD COLSPAN="2" ALIGN="LEFT">ohne Authentisierung &#8212; bewusste Abw&#228;gung</TD></TR>
+      <TR><TD COLSPAN="2" ALIGN="LEFT"> </TD></TR>
+      <TR><TD COLSPAN="2" ALIGN="LEFT"><B>Sendezeitbudget</B></TD></TR>
+      <TR><TD ALIGN="LEFT">868.0&#8211;868.6</TD><TD ALIGN="LEFT">25 mW, 1 % &#8594; 6,6 s Sperre</TD></TR>
+      <TR><TD ALIGN="LEFT">869.4&#8211;869.65</TD><TD ALIGN="LEFT">500 mW, 10 % &#8594; 14,8 s Sperre</TD></TR>
+      <TR><TD COLSPAN="2" ALIGN="LEFT"> </TD></TR>
+      <TR><TD COLSPAN="2" ALIGN="LEFT"><B>Solarbetrieb</B></TD></TR>
+      <TR><TD COLSPAN="2" ALIGN="LEFT">Victron schaltet morgens schlagartig zu,<BR ALIGN="LEFT"/>abends ab. Kaltstart per main.py,<BR ALIGN="LEFT"/>Konfiguration sichert sich sofort.<BR ALIGN="LEFT"/><B>Nachts ist die Kette unterbrochen.</B></TD></TR>
+      </TABLE>>];
+
+    /* Legenden unten nebeneinander, ohne den Berg-Cluster aufzubrechen */
+    { rank=same; regeln; technik; }
+    dell -> regeln [style=invis];
+    dell -> technik [style=invis];
+}
