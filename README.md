@@ -53,6 +53,72 @@ LAN. Frühere Aufbauten hingen an WireGuard und einem Server im Internet; beides
 ist aus diesem Repo entfernt, weil der Notfallkanal genau daran nicht hängen
 darf.
 
+## Die Ebyte-Welt daneben: warum es zwei Netze bleiben
+
+Neben dem Gateway hängt eine zweite Funkwelt aus **Ebyte-Modulen**
+(E90-DTU, E22-900) — Repeater und Endpunkte, die untereinander sprechen.
+Sie lässt sich mit dem Gateway **nicht vereinen**, und das liegt allein am
+Syncword.
+
+### Von der Gateway-Seite geht es nicht
+
+Der SX1302 im DLOS8N kennt nur **ein Syncword für den ganzen Chip**
+(`lorawan_public`), und dafür nur zwei Werte: `0x34` (öffentlich) oder `0x12`
+(privat). Einen Parameter pro Kanal gibt es nicht — belegt in
+[gateway/RAWKANAL.md](gateway/RAWKANAL.md). Auf `0x12` zu gehen hieße `0x12`
+für alle zehn Kanäle und damit das Ende des LoRaWAN-Betriebs.
+
+### Von der Ebyte-Seite auch nicht
+
+Die naheliegende Gegenfrage — dann eben das Ebyte-Modul umstellen — führt
+ebenfalls ins Leere. Die vollständige Registerliste eines E90/E22 ist:
+
+```
+00H ADDH   01H ADDL   02H NETID   03H REG0   04H REG1
+05H REG2   06H REG3   07H CRYPT_H  08H CRYPT_L
+80H-86H PID (nur lesbar)
+```
+
+**Ein Syncword-Register existiert nicht.** Das Wort kommt im Handbuch nicht
+vor. Die `0x58` sind in Ebytes Firmware festverdrahtet und für den Anwender
+unerreichbar — sie mussten deshalb an der Luft ausgemessen werden, siehe
+[devices/pico_sx1262/EBYTE_E90.md](devices/pico_sx1262/EBYTE_E90.md).
+
+| | Frequenz | SF / BW | **Syncword** |
+|---|---|---|---|
+| Gateway (SX1302) | frei | frei je Kanal | nur `0x34` **oder** `0x12`, chipweit |
+| Ebyte-Modul | Kanalraster | Luftrate wählbar | **fest `0x58`** |
+
+Spreizfaktor und Bandbreite waren also nie das Hindernis: man könnte beide
+Seiten problemlos auf SF7/BW125 bringen, sie würden sich trotzdem nicht
+hören. Die Schnittmenge ist leer, aus welcher Richtung man es auch angeht.
+
+### Die Brücke sind die eigenen Knoten
+
+Was beide Welten erreicht, sind die Geräte mit **frei programmierbarem
+Funkchip**: der TrackerD (SX1276) und der Pico (SX1262). Sie können jedes
+Syncword setzen und senden deshalb jede Nachricht **zweimal** — einmal mit
+`0x34` für das Gateway, einmal mit `0x58` für die Ebyte-Welt.
+
+```
+                    076C>ALARM
+                         |
+          +--------------+--------------+
+          | SF7/BW125, 0x34             | SF11/BW500, 0x58
+          v                             v
+   DLOS8N chan_Lora_std          E90-DTU / E22-900
+   -> ChirpStack 192.168.5.23    -> Repeater, serielle Gegenstelle
+```
+
+Die Ebyte-Module werden nie Teil des Gateway-Netzes. Sie bleiben Endpunkte
+und Repeater in ihrer eigenen Welt; die Verbindung dazwischen stellen allein
+die programmierbaren Knoten her. Das kostet die doppelte Luftzeit und ist
+kein Umweg, sondern die einzige Verbindung, die es gibt.
+
+Umschaltbar über `AT+EBYTE=0|1|2` (0 = nur Rohkanal, 1 = nur Ebyte,
+2 = beides, Vorgabe). Details in
+[devices/trackerd_p2p/README.md](devices/trackerd_p2p/README.md).
+
 ## Was kaputt war
 
 ### 1. Gateway sendete überhaupt kein LoRaWAN
