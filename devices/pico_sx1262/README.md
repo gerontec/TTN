@@ -160,6 +160,69 @@ Verbindungsgüte, gemessen mit acht Paketen im Abstand von 7 s:
 Ausreisser bis −106 dBm / SNR 5. Für einen Krisenkanal heisst das: die Strecke
 trägt, hat aber keine üppige Reserve — Wiederholungen einplanen.
 
+### Antennenvergleich
+
+Drei Antennen, gleiches Protokoll: acht Pakete im 7-s-Abstand bei 14 dBm,
+dazu der Rauschflur-Sweep aus `messung/band.py`.
+
+| | Antenne 1 | Antenne 2 | **Antenne 3** |
+|---|---|---|---|
+| Angekommen | 7/8 | 8/8 | 7/8 |
+| RSSI Median | −94 dBm | −100 dBm | **−94 dBm** |
+| RSSI Spanne | −90…−106 (16 dB) | −99…−106 (7 dB) | **−93…−99 (6 dB)** |
+| SNR Median | ~12 | ~9,5 | **~12,5** |
+| Rauschflur 865 MHz | −107 | −114 | −106 |
+| Rauschflur 868 MHz | −106 | −114 | −107 |
+| Rauschflur 870 MHz | −107 | −114 | −107 |
+
+**Antenne 3 ist die beste**: gleicher Pegel wie Antenne 1, aber die
+gleichmässigste Strecke von allen (6 dB Spanne statt 16). Antenne 2 liegt
+6–8 dB darunter und ist für Reichweite die schlechteste Wahl — 6 dB sind im
+Freiraum etwa die halbe Distanz.
+
+Beide Messverfahren stützen sich gegenseitig: Sendepegel und Rauschflur bei
+868 MHz zeigen bei Antenne 2 denselben Einbruch von 7–8 dB. Dass der Rauschflur
+dort auf −114 dBm fällt, also fast auf das Eigenrauschen des Empfängers
+(−113…−117), heisst: diese Antenne bringt im 868er-Band kaum noch
+Umgebungsrauschen herein.
+
+Die Ausfallquote (7/8 gegen 8/8) ist bei acht Paketen statistisch nicht
+unterscheidbar — belastbar sind die Pegel.
+
+### Sendeleistung: nominell +22 dBm
+
+Gemessen als Empfangspegel am Gateway, drei Pakete je Stufe, Median:
+
+| Sollwert | `paDutyCycle`/`hpMax` | RSSI-Median | Δ zu 14 dBm |
+|---|---|---|---|
+| 14 dBm | 0x02 / 0x02 | −101 dBm | — |
+| 17 dBm | 0x02 / 0x03 | −101 dBm | **0 dB** |
+| 20 dBm | 0x03 / 0x05 | −96 dBm | +5 dB |
+| 22 dBm | 0x04 / 0x07 | −89 dBm | **+12 dB** |
+
+Zwei Lehren daraus:
+
+**Die PA-Konfiguration bestimmt die Leistung, nicht `SetTxParams`.** Von 14 auf
+17 dBm ändert sich messbar nichts, weil `paDutyCycle` gleich bleibt. Wer nur
+`SetTxParams` hochdreht, verstellt den Sollwert und nicht den Sender — die
+Tabellenwerte aus dem Datenblatt müssen mitziehen.
+
+**Der Hub von 12 dB ist grösser als die nominellen 8 dB** zwischen den Stufen.
+Umgekehrt gelesen: die „14-dBm"-Konfiguration liefert real eher ~10 dBm. Die
+Zahlen in `SetTxParams` sind Nennwerte des Arbeitspunkts, keine kalibrierte
+Ausgangsleistung.
+
+Dass der HP-PA die 22 dBm überhaupt trägt, bestätigt die Überstromschwelle:
+`0x08E7` = `0x38` = **140 mA**, der SX1262-Vorgabewert (beim SX1261 wären es
+60 mA). Ein LP-PA-Chip könnte den gemessenen Hub nicht liefern.
+
+Gemessen wurden **Empfangspegel, keine Leistung in einen Abschlusswiderstand** —
+die Differenzen sind belastbar, die Absolutwerte nicht.
+
+Betrieben wird mit **14 dBm**: auf 868.125 MHz (Band 868.0–868.6) sind 25 mW ERP
+erlaubt, bei 1 % Duty Cycle. Das 500-mW-Band 869.4–869.65 MHz läge rechtlich
+richtig, ist vom Gateway aus aber nicht erreichbar (siehe RAWKANAL.md).
+
 ### Vorher: wie die fehlende Antenne gefunden wurde
 
 Der Fehler war von der Konfiguration nicht zu unterscheiden — der Chip meldete
