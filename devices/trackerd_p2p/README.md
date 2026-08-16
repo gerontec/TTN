@@ -151,3 +151,52 @@ Damit klärt sich, ob Kanal, Air Rate und serielle Rate die
 [`AT+IAP`-Episode](../la66_p2p/README.md#gegenstelle-ebyte-e22) überlebt
 haben. Solange das Modul im Übertragungsmodus steht, ist es nicht
 auslesbar und der Sweep bleibt ohne Aussagekraft über die Luft.
+
+## Ebyte-tauglich: gesendet wird auf beiden Profilen
+
+Ab **v1.7** ist der TrackerD zugleich Knoten des Krisennetzes und Ebyte-Gerät.
+Die beiden Netze lassen sich nicht vereinen, deshalb geht jede Nachricht
+zweimal raus:
+
+| | Rohkanal (DLOS8N, Brauneck) | Ebyte E90-DTU(900SL33) |
+|---|---|---|
+| Frequenz | 868.125 MHz | 868.125 MHz |
+| SF / BW | SF7 / 125 kHz | **SF11 / 500 kHz** |
+| LDRO | automatisch (0) | **1, erzwungen** |
+| Syncword | 0x34 | **0x58** |
+| Rahmen | `IIII>` + Nutzlast | Ebyte-Rahmen, siehe [EBYTE_E90.md](../pico_sx1262/EBYTE_E90.md) |
+
+**Warum nicht ein gemeinsames Profil?** SF und Bandbreite ließen sich am
+Gateway nachziehen (`chan_Lora_std` hat beides als Parameter), das **Syncword
+nicht**: der SX1302 kennt nur einen Wert für den ganzen Chip, und dort nur 0x34
+oder 0x12 — nie die 0x58, auf denen Ebyte ab Werk liegt
+([RAWKANAL.md](../../gateway/RAWKANAL.md)). Doppelt senden ist deshalb kein
+Umweg, sondern der einzige Weg, beide Gegenstellen zu erreichen.
+
+```
+AT+EBYTE=0    nur Rohkanal
+AT+EBYTE=1    nur Ebyte
+AT+EBYTE=2    beides (Vorgabe)
+```
+
+**Empfangen wird immer nur auf einem Profil** — der Funk kann zu einer Zeit nur
+ein SF/BW/Syncword. Ab Werk lauscht er auf dem Ebyte-Profil.
+
+## Der Alarmknopf
+
+Bis v1.4 tat der Knopf in dieser Firmware **nichts**: es gab kein
+`digitalRead`, gesendet wurde nur auf serielles Kommando. Seit v1.5 löst ein
+Druck von **2 s** einen Alarm aus (`076C>ALARM`).
+
+Pin und Polarität stammen aus Draginos `extiButtonLS`:
+
+```c
+#define BUTTON_PIN1 25
+OneButton button1(BUTTON_PIN1, false, false);   // activeLow=false!
+```
+
+**GPIO 25, active high** — wer die übliche Active-Low-Taste annimmt, baut die
+Logik verkehrt herum ein. Die 2000 ms sind Draginos `sys.exit_alarm_time`,
+damit sich der Knopf in beiden Firmwares gleich anfühlt.
+
+`AT+ALARM` löst denselben Alarm ohne Knopf aus, für Tests.

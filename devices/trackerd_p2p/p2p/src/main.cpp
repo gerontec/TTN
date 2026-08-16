@@ -16,7 +16,7 @@
 #include <LoRa.h>
 #include <esp_ota_ops.h>
 
-#define FW_VERSION "TrackerD-P2P v1.6"
+#define FW_VERSION "TrackerD-P2P v1.7"
 
 /* Pinbelegung laut Dragino-Pinmapping (README des TrackerD-Repos) */
 #define PIN_SCK    5
@@ -48,20 +48,23 @@
  * nichts (attachClick ist auskommentiert). */
 #define ALARM_HOLD_MS 2000
 
-/* Defaults: EU868, passend zum gemeinsamen Kanal des Krisennetzes
- * (Gateway DLOS8N chan_Lora_std, Relais Brauneck: 868.125 MHz, SF7, BW125).
+/* Defaults. Gesendet wird ab Werk auf **beiden** Profilen (cfgEbyte weiter
+ * unten), empfangen dagegen immer nur auf einem -- der Funk kann zu einer Zeit
+ * nur ein SF/BW/Syncword. Die Werte hier sind deshalb das Empfangsprofil, und
+ * das ist das Ebyte-Profil: das E90-DTU ist die naehere Gegenstelle, und der
+ * Rohkanal wird ohnehin vom Gateway mitgehoert.
  *
- * Syncword 0x34 (oeffentlich) statt des privaten 0x12: der SX1302 im Gateway
- * kennt nur ein Syncword fuer den ganzen Chip (lorawan_public), und das Relais
- * lauscht ebenfalls auf 0x34. Mit 0x12 wird der Node schlicht nicht gehoert.
- * Die Konfiguration lebt nur im RAM, deshalb muss der Wert hier stehen und
- * nicht per AT+SYNCWORD nachgereicht werden -- er waere nach jedem Reset weg. */
+ * Umschalten: AT+EBYTE=0 (nur Rohkanal), =1 (nur Ebyte), =2 (beides).
+ *
+ * Die Konfiguration lebt nur im RAM, deshalb muessen die Werte hier stehen
+ * und koennen nicht per AT nachgereicht werden -- sie waeren nach jedem Reset
+ * wieder weg. */
 static long     cfgFreq   = 868125000;
-static int      cfgSf     = 7;
-static long     cfgBw     = 125000;
+static int      cfgSf     = 11;
+static long     cfgBw     = 500000;
 static int      cfgCr     = 5;      /* 5..8 entspricht 4/5..4/8 */
 static int      cfgPower  = 17;     /* dBm, PA_BOOST */
-static int      cfgSync   = 0x34;
+static int      cfgSync   = 0x58;
 static int      cfgPre    = 8;
 static bool     cfgCrc    = true;
 static bool     rxEnabled = true;
@@ -77,9 +80,29 @@ static int      cfgImplicitLen = 32;
  * Fuer Ebyte muss es 1 sein, obwohl die Symboldauer unter 16 ms liegt. */
 static int      cfgLdro   = -1;
 
-/* Ebyte-Modus: Pakete zusaetzlich in den Rahmen des E90-DTU verpacken.
- * Messungen und Format stehen in ../pico_sx1262/EBYTE_E90.md. */
-static bool     cfgEbyte  = false;
+/* Betriebsart: 0 = nur Rohkanal, 1 = nur Ebyte, 2 = beides nacheinander.
+ *
+ * Die beiden Netze schliessen sich am Syncword aus und lassen sich nicht
+ * vereinen: Ebyte liegt ab Werk auf 0x58, der SX1302 des DLOS8N kennt nur ein
+ * Syncword fuer den ganzen Chip und dort nur 0x34 oder 0x12 (RAWKANAL.md).
+ * SF und Bandbreite koennte man am Gateway nachziehen, das Syncword nicht.
+ *
+ * Deshalb Modus 2 als Vorgabe: dieselbe Nachricht geht zweimal raus, einmal
+ * fuer das Gateway und einmal fuer das E90. Das kostet Luftzeit, ist aber der
+ * einzige Weg, beide Wege offen zu halten. */
+#define SENDE_ROH    0
+#define SENDE_EBYTE  1
+#define SENDE_BEIDE  2
+static int      cfgEbyte  = SENDE_BEIDE;
+
+/* Rohkanal (DLOS8N chan_Lora_std, Relais Brauneck) */
+#define ROH_SF    7
+#define ROH_BW    125000L
+#define ROH_SYNC  0x34
+/* E90-DTU(900SL33), an der Luft ausgemessen */
+#define EBY_SF    11
+#define EBY_BW    500000L
+#define EBY_SYNC  0x58
 
 static uint32_t rxCount = 0, txCount = 0;
 
@@ -120,7 +143,9 @@ static void printCfg()
     Serial.printf("IH=%d PLEN=%d\r\n", cfgImplicit ? 1 : 0, cfgImplicitLen);
     Serial.printf("RX=%d\r\n",      rxEnabled ? 1 : 0);
     Serial.printf("LDRO=%s\r\n",    cfgLdro < 0 ? "auto" : (cfgLdro ? "1" : "0"));
-    Serial.printf("EBYTE=%d\r\n",   cfgEbyte ? 1 : 0);
+    Serial.printf("EBYTE=%d (%s)\r\n", cfgEbyte,
+                  cfgEbyte == SENDE_BEIDE ? "roh+Ebyte" :
+                  (cfgEbyte == SENDE_EBYTE ? "nur Ebyte" : "nur roh"));
     Serial.printf("TXCNT=%lu RXCNT=%lu\r\n",
                   (unsigned long)txCount, (unsigned long)rxCount);
 }
@@ -156,6 +181,25 @@ static size_t ebyteWrap(const uint8_t *in, size_t len, uint8_t *out, size_t cap)
     return len + 8;
 }
 
+/* Funk auf eines der beiden Profile stellen. LDRO muss nach SF und Bandbreite
+ * kommen, weil beide es neu berechnen. */
+static void funkProfil(int sf, long bw, int sync, bool ldro)
+{
+    LoRa.idle();
+    LoRa.setSpreadingFactor(sf);
+    LoRa.setSignalBandwidth(bw);
+    LoRa.setSyncWord(sync);
+    LoRa.forceLdo(ldro);
+}
+
+static void einmalSenden(const uint8_t *daten, size_t len)
+{
+    LoRa.beginPacket();
+    LoRa.write(daten, len);
+    LoRa.endPacket();
+    txCount++;
+}
+
 static void sendPacket(const uint8_t *buf, size_t len)
 {
     uint8_t out[255];
@@ -165,23 +209,27 @@ static void sendPacket(const uint8_t *buf, size_t len)
     if (len > sizeof(out) - hdr) len = sizeof(out) - hdr;
     memcpy(out + hdr, buf, len);
 
-    /* Im Ebyte-Modus wandert das fertige Paket samt Absenderkennung als
-     * Nutzlast in den DTU-Rahmen -- die Kennung bleibt so erhalten. */
+    /* Im Ebyte-Rahmen wandert das fertige Paket samt Absenderkennung als
+     * Nutzlast hinein -- die Kennung bleibt so erhalten. */
     uint8_t roh[255];
-    size_t  rohLen = 0;
-    if (cfgEbyte) rohLen = ebyteWrap(out, hdr + len, roh, sizeof(roh));
+    size_t  rohLen = ebyteWrap(out, hdr + len, roh, sizeof(roh));
 
     LoRa.idle();
-    LoRa.beginPacket();
-    if (cfgEbyte) LoRa.write(roh, rohLen);
-    else          LoRa.write(out, hdr + len);
-    LoRa.endPacket();
-    txCount++;
+    if (cfgEbyte == SENDE_ROH || cfgEbyte == SENDE_BEIDE) {
+        funkProfil(ROH_SF, ROH_BW, ROH_SYNC, false);
+        einmalSenden(out, hdr + len);
+    }
+    if (cfgEbyte == SENDE_EBYTE || cfgEbyte == SENDE_BEIDE) {
+        funkProfil(EBY_SF, EBY_BW, EBY_SYNC, true);
+        einmalSenden(roh, rohLen);
+    }
+    /* Danach steht der Funk auf dem zuletzt benutzten Profil -- im
+     * Doppelbetrieb also auf Ebyte. Empfangen wird immer nur auf einem. */
     blink(LED_BLUE, 30);
     if (rxEnabled) LoRa.receive(cfgImplicit ? cfgImplicitLen : 0);
-    Serial.printf("+SEND: OK %u Byte (Kennung %s%s)\r\n",
-                  (unsigned)(cfgEbyte ? rohLen : hdr + len), cfgId,
-                  cfgEbyte ? ", Ebyte-Rahmen" : "");
+    Serial.printf("+SEND: OK %s (Kennung %s)\r\n",
+                  cfgEbyte == SENDE_BEIDE ? "roh + Ebyte"
+                    : (cfgEbyte == SENDE_EBYTE ? "Ebyte" : "roh"), cfgId);
 }
 
 /* Alarm senden. Geht durch sendPacket, bekommt also die Absenderkennung
@@ -463,14 +511,14 @@ static void handleLine(String line)
      * AT+BW usw. setzen -- als Sammelbefehl ist es aber schwerer, einen davon
      * zu vergessen, und LDRO waere sonst gar nicht erreichbar. */
     if ((a = argOf(line, "AT+EBYTE"))) {
-        if (*a == '1') {
-            cfgFreq = 868125000; cfgSf = 11; cfgBw = 500000; cfgCr = 5;
-            cfgSync = 0x58; cfgPre = 8; cfgCrc = true;
-            cfgLdro = 1; cfgEbyte = true;
+        if (*a == '1' || *a == '2') {
+            cfgFreq = 868125000; cfgSf = EBY_SF; cfgBw = EBY_BW; cfgCr = 5;
+            cfgSync = EBY_SYNC; cfgPre = 8; cfgCrc = true;
+            cfgLdro = 1; cfgEbyte = (*a == '2') ? SENDE_BEIDE : SENDE_EBYTE;
         } else if (*a == '0') {
-            cfgFreq = 868125000; cfgSf = 7; cfgBw = 125000; cfgCr = 5;
-            cfgSync = 0x34; cfgPre = 8; cfgCrc = true;
-            cfgLdro = -1; cfgEbyte = false;
+            cfgFreq = 868125000; cfgSf = ROH_SF; cfgBw = ROH_BW; cfgCr = 5;
+            cfgSync = ROH_SYNC; cfgPre = 8; cfgCrc = true;
+            cfgLdro = -1; cfgEbyte = SENDE_ROH;
         } else { Serial.println("AT_PARAM_ERROR"); return; }
         applyRadio();
         printCfg();
