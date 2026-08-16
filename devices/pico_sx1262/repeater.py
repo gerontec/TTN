@@ -44,8 +44,19 @@ import lora_p2p
 # --- Der gemeinsame Kanal -------------------------------------------------
 KANAL_FREQ, KANAL_SF, KANAL_BW = 868125000, 7, 125000
 
+# --- Rahmenformat ---------------------------------------------------------
+# frisch:          IIII>nutzlast          z.B. b"A1B2>POSITION"
+# weitergegeben:   RnIIII>nutzlast        z.B. b"R1A1B2>POSITION"
+# Befehl/Antwort:  C>... bzw. A>...       (nie weitergegeben)
+#
+# Eindeutig, weil "R" keine Hexziffer ist und bei C>/A> an zweiter Stelle ">"
+# steht, was ebenfalls keine Hexziffer sein kann. Die Ursprungskennung bleibt
+# beim Weiterreichen erhalten -- man sieht auch nach drei Spruengen, wer sendet.
+ID_LEN = 4
+HEX = b"0123456789ABCDEF"
+
 # --- Schleifenschutz ------------------------------------------------------
-MARKER = b"R"                   # Praefix "R<sprung>>", z.B. b"R1>"
+MARKER = b"R"                   # Praefix "R<sprung>", siehe Rahmenformat
 MAX_HOPS = 3                    # danach wird nicht mehr weitergegeben
 DEDUP_S = 300                   # gleicher Inhalt fuer 5 min gesperrt
 DEDUP_MAX = 24
@@ -102,21 +113,29 @@ class Dedup:
         return False
 
 
-def hops(nutzlast):
-    """Sprungzahl aus dem Marker, 0 wenn keiner da ist."""
-    if (len(nutzlast) >= 3 and nutzlast[0:1] == MARKER
-            and nutzlast[2:3] == b">" and 0x30 <= nutzlast[1] <= 0x39):
-        return nutzlast[1] - 0x30
-    return 0
+def _ist_hex(b):
+    return len(b) == ID_LEN and all(c in HEX for c in b.upper())
 
 
-def kern(nutzlast):
-    """Inhalt ohne Marker -- der Schluessel fuer den Dublettenspeicher."""
-    return nutzlast[3:] if hops(nutzlast) else nutzlast
+def zerlege(roh):
+    """(sprung, absender, nutzlast). sprung 0 = frisch, absender None = ohne."""
+    # weitergegeben: R<ziffer><IIII>>
+    if (len(roh) > ID_LEN + 3 and roh[0:1] == MARKER
+            and 0x30 <= roh[1] <= 0x39
+            and roh[2 + ID_LEN:3 + ID_LEN] == b">"
+            and _ist_hex(roh[2:2 + ID_LEN])):
+        return roh[1] - 0x30, roh[2:2 + ID_LEN], roh[3 + ID_LEN:]
+    # frisch: <IIII>>
+    if (len(roh) > ID_LEN and roh[ID_LEN:ID_LEN + 1] == b">"
+            and _ist_hex(roh[0:ID_LEN])):
+        return 0, roh[0:ID_LEN], roh[ID_LEN + 1:]
+    # ohne Kennung -- aeltere Sender, trotzdem weitergeben
+    return 0, None, roh
 
 
-def markieren(nutzlast, n):
-    return MARKER + bytes([0x30 + n]) + b">" + kern(nutzlast)
+def bauen(sprung, absender, nutzlast):
+    kennung = absender if absender else b"????"
+    return MARKER + bytes([0x30 + sprung]) + kennung + b">" + nutzlast
 
 
 def _kanal(r):
@@ -184,7 +203,7 @@ def run(telemetrie=None, verbose=True, dauer_s=0):
                 fernwirk.konf_sichern(konf)
             print("  Befehl %r -> %s" % (roh, text))
             if budget.frei():
-                a = fernwirk.antwort(text)
+                a = fernwirk.antwort(text, konf.get("id", "B001"))
                 r.set_power(konf["out_power"])
                 r.send(a)
                 budget.belegen(lora_p2p.airtime_ms(len(a), sf=KANAL_SF,
@@ -204,16 +223,17 @@ def run(telemetrie=None, verbose=True, dauer_s=0):
                 print("  verworfen: Weitergabe abgeschaltet")
             continue
 
-        n = hops(roh)
+        n, absender, nutz = zerlege(roh)
         if n >= MAX_HOPS:
             unterdrueckt += 1
             if verbose:
-                print("  verworfen: %d Spruenge erreicht, %r" % (n, roh[:24]))
+                print("  verworfen: %d Spruenge erreicht, von %s"
+                      % (n, absender or b"?"))
             continue
 
-        # Schluessel ohne Marker: derselbe Inhalt geht nicht zweimal hinaus,
-        # ueber welchen Umweg er auch ankommt.
-        if dedup.bekannt(kern(roh)):
+        # Schluessel aus Absender und Nutzlast, also ohne Sprungzaehler:
+        # derselbe Inhalt geht nicht zweimal hinaus, ueber welchen Umweg auch.
+        if dedup.bekannt((absender or b"") + nutz):
             unterdrueckt += 1
             if verbose:
                 print("  verworfen: Dublette, %r" % roh[:24])
@@ -225,7 +245,7 @@ def run(telemetrie=None, verbose=True, dauer_s=0):
                   % budget.wartezeit_s())
             continue
 
-        raus = markieren(roh, n + 1)
+        raus = bauen(n + 1, absender, nutz)
         luft = lora_p2p.airtime_ms(len(raus), sf=KANAL_SF, bw=KANAL_BW)
         r.set_power(konf["out_power"])
         ok = r.send(raus)
@@ -233,6 +253,7 @@ def run(telemetrie=None, verbose=True, dauer_s=0):
         weiter += 1 if ok else 0
         stat["weiter"] = weiter
         stat["unterdrueckt"] = unterdrueckt
-        print("%s Sprung %d  RSSI %.0f SNR %.1f  %d dBm, %.0f ms, %r"
-              % ("weiter:" if ok else "TX-FEHLER:", n + 1, rssi, snr,
-                 konf["out_power"], luft, kern(roh)[:32]))
+        print("%s von %s  Sprung %d  RSSI %.0f SNR %.1f  %.0f ms  %r"
+              % ("weiter:" if ok else "TX-FEHLER:",
+                 (absender or b"ohne").decode(), n + 1, rssi, snr, luft,
+                 nutz[:32]))

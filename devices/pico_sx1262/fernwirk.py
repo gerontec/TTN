@@ -11,7 +11,7 @@ Relais umstellen. Das ist eine Abwaegung zugunsten der Einfachheit.
 Rahmenformat, beides schlichter Text:
 
     Befehl:   C>POWER 20
-    Antwort:  A>POWER 20 dBm
+    Antwort:  A>B001>POWER 20 dBm    (mit Kennung der Station)
 
 Frequenz und Spreizfaktor sind bewusst **nicht** fernstellbar: alle Teilnehmer
 teilen sich einen Kanal, ein Wechsel wuerde die Station unerreichbar machen.
@@ -20,6 +20,7 @@ Befehle:
 
     POWER <dBm>       Sendeleistung, 2..22   (der wichtigste)
     STATUS            Zaehler, Laufzeit, Konfiguration
+    ID [<hex4>]       eigene Absenderkennung lesen oder setzen
     RELAY 0|1         Weitergabe aus- oder einschalten
     TELEM 0|1         Quittungen aus- oder einschalten
     SAVE              Konfiguration dauerhaft sichern
@@ -39,6 +40,7 @@ BEFEHL_PRAEFIX = b"C>"
 ANTWORT_PRAEFIX = b"A>"
 
 STANDARD = {
+    "id": "B001",               # eigene Absenderkennung, vier Hexstellen
     "out_power": 14,
     "telemetrie": True,
     "relay_aktiv": True,
@@ -87,8 +89,8 @@ def ausfuehren(roh, konf, stat):
 
 
     if name == b"STATUS":
-        return "weiter%d unt%d %ds %s %ddBm tel%d" % (
-            stat["weiter"], stat["unterdrueckt"],
+        return "id%s weiter%d unt%d %ds %s %ddBm tel%d" % (
+            konf.get("id", "B001"), stat["weiter"], stat["unterdrueckt"],
             utime.ticks_diff(utime.ticks_ms(), stat["start"]) // 1000,
             "an" if konf["relay_aktiv"] else "AUS",
             konf["out_power"], 1 if konf["telemetrie"] else 0)
@@ -110,11 +112,22 @@ def ausfuehren(roh, konf, stat):
         stat["reboot"] = True
         return "Neustart"
 
+    if name == b"ID":
+        if wert is None:
+            return "ID %s" % konf.get("id", "B001")
+        w = wert.upper()
+        if len(w) != 4 or any(c not in "0123456789ABCDEF" for c in w):
+            return "ID: vier Hexstellen erwartet"
+        konf["id"] = w
+        stat["konf_geaendert"] = True
+        return "ID %s" % w
+
     if name == b"PING":
         return "PONG"
 
     return "unbekannt: %s" % name.decode()
 
 
-def antwort(text):
-    return ANTWORT_PRAEFIX + text.encode()
+def antwort(text, kennung="B001"):
+    """Antworten tragen die Kennung der antwortenden Station."""
+    return ANTWORT_PRAEFIX + kennung.encode() + b">" + text.encode()
