@@ -24,6 +24,7 @@ import base64
 import binascii
 import json
 import logging
+import select
 import socket
 import sys
 import time
@@ -106,6 +107,8 @@ def main():
                     help="zusaetzlich auf mosquitto veroeffentlichen")
     ap.add_argument("--send", metavar="TEXT",
                     help="einmal rohes LoRa senden, sobald das Gateway PULL_DATA schickt")
+    ap.add_argument("--ctrl-port", type=int, default=1703,
+                    help="lokaler Steuereingang; was hier ankommt, wird gefunkt")
     ap.add_argument("--datr", default="SF7BW125")
     ap.add_argument("--power", type=int, default=14,
                     help="dBm ERP; 14 = 25 mW, das Limit in 868.0-868.6")
@@ -128,8 +131,25 @@ def main():
              args.port, args.freq, FREQ_TOL * 1000,
              ", alle Kanaele" if args.all else "")
 
-    pending_tx = args.send
+    # Steuereingang: der Dienst haelt 1702 dauerhaft, ein zweites Werkzeug
+    # koennte also nicht senden. Wer etwas absetzen will, schickt es hierher
+    # -- nur von localhost, das ist kein Fernzugang.
+    ctrl = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    ctrl.bind(("127.0.0.1", args.ctrl_port))
+    log.info("Steuereingang auf 127.0.0.1:%d", args.ctrl_port)
+
+    warteschlange = []
+    if args.send:
+        warteschlange.append(args.send.encode())
+
     while True:
+        bereit, _, _ = select.select([s, ctrl], [], [], 1.0)
+        if ctrl in bereit:
+            roh, _ = ctrl.recvfrom(4096)
+            warteschlange.append(roh)
+            log.info("eingereiht: %r", roh)
+        if s not in bereit:
+            continue
         data, peer = s.recvfrom(65535)
         if len(data) < 4:
             continue
@@ -148,12 +168,12 @@ def main():
 
         elif kind == PULL_DATA:
             s.sendto(bytes([data[0]]) + token + bytes([PULL_ACK]), peer)
-            if pending_tx is not None:
+            if warteschlange:
+                naechste = warteschlange.pop(0)
                 s.sendto(bytes([data[0]]) + token + bytes([PULL_RESP])
-                         + txpk(pending_tx, args.freq, args.datr, args.power), peer)
+                         + txpk(naechste, args.freq, args.datr, args.power), peer)
                 log.info("gesendet: %r auf %.3f MHz %s, %d dBm",
-                         pending_tx, args.freq, args.datr, args.power)
-                pending_tx = None
+                         naechste, args.freq, args.datr, args.power)
 
         elif kind == TX_ACK:
             if len(data) > 12:

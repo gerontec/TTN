@@ -138,15 +138,90 @@ Nebenbei: 30 dBm = 1 W wären in EU868 ohnehin nicht zulässig. Das Maximum ist
 500 mW ERP im Band 869.4–869.65, und der SX1262 kann mit 22 dBm ≈ 158 mW
 darunter bleiben.
 
+## Stromversorgung: reiner Solarbetrieb
+
+**Die Station hat keine Pufferbatterie.** Der Victron-Laderegler schaltet den
+Verbraucher morgens schlagartig zu und abends wieder ab. Das prägt den Betrieb
+stärker als jede Funkeinstellung:
+
+**Jeder Morgen ist ein Kaltstart, und niemand ist oben.** Deshalb liegt ein
+`main.py` auf dem Board, das `repeater.run()` startet, bei einem Fehler
+wiederholt und notfalls `machine.reset()` auslöst, statt in den REPL zu fallen.
+Ein Absturz darf die Station nicht bis zum nächsten Morgen stilllegen.
+
+**Konfiguration wird sofort gesichert, nicht erst auf `SAVE`.** Eine per Funk
+gesetzte Sendeleistung wäre sonst am nächsten Morgen wieder weg. `POWER`, `SF`,
+`FREQ`, `RELAY` und `TELEM` schreiben deshalb unmittelbar nach `/relais.json`.
+Nachgemessen: nach `C>POWER 17` steht dort
+`{"relay_aktiv": true, "out_sf": 12, "out_freq": 869525000, "out_power": 17,
+"telemetrie": true}`.
+
+**Harte Abschaltung kann einen Flash-Schreibvorgang treffen.**
+`fernwirk.konf_laden()` fängt eine beschädigte `/relais.json` ab und fällt auf
+die Vorgaben zurück — die Station kommt dann mit Standardwerten hoch, aber sie
+kommt hoch.
+
+**Nachts ist die Kette unterbrochen.** Von Sonnenuntergang bis Sonnenaufgang
+gibt es kein Relais und damit keine Verbindung ins Nachbartal. Das ist eine
+Eigenschaft des Aufbaus, keine Störung — wer nachts Reichweite braucht, braucht
+einen Akku.
+
+Stromhunger als Anhaltspunkt: der RP2040 zieht bei 125 MHz rund 25 mA, der
+SX1262 im Dauerempfang etwa 5 mA, im Sendemoment bei 22 dBm rund 118 mA. Der
+Sendeanteil ist wegen des Sendezeitbudgets klein; die Dauerlast bestimmt der
+Prozessor.
+
 ## Betrieb
 
 ```python
 import repeater
-repeater.run()                    # Dauerbetrieb
+repeater.run()                    # Dauerbetrieb (macht main.py automatisch)
 repeater.run(dauer_s=60)          # befristet, mit Bilanz
 repeater.run(telemetrie=False)    # ohne Quittung ans Gateway
 ```
 
-Für den unbeaufsichtigten Betrieb auf dem Berg gehört ein `main.py` auf das
-Board, das `repeater.run()` aufruft — dann startet das Relais nach jedem
-Stromausfall von selbst.
+## Fernwirken von 192.168.5.23 aus
+
+Der Pico hat **kein WLAN** — es ist ein RP2040, kein Pico W; das Modul
+`network` existiert nicht. Auf dem Berg gibt es also weder SSH noch OTA. Der
+einzige Rückkanal ist der Funk, auf dem das Relais ohnehin arbeitet. Für ein
+Krisensystem ist das der richtige Weg: er trägt genau dann, wenn alles andere
+ausgefallen ist.
+
+Bewusst **ohne Authentisierung** — wer in Funkreichweite ist, könnte das Relais
+umstellen. Abwägung zugunsten der Einfachheit.
+
+```sh
+python3 /home/gh/python/lora_cmd.py POWER 17     # der Kernbefehl
+python3 /home/gh/python/lora_cmd.py STATUS
+python3 /home/gh/python/lora_cmd.py SF 9
+python3 /home/gh/python/lora_cmd.py RELAY 0
+python3 /home/gh/python/lora_cmd.py REBOOT
+```
+
+| Befehl | Wirkung |
+|---|---|
+| `POWER <2..22>` | Sendeleistung talwärts in dBm |
+| `SF <7..12>` | Spreizfaktor talwärts |
+| `FREQ <MHz>` | Sendefrequenz talwärts, 863…870 |
+| `STATUS` | Zähler, Laufzeit, Konfiguration |
+| `RELAY 0\|1` | Weitergabe aus/ein |
+| `TELEM 0\|1` | Quittungen aus/ein |
+| `SAVE` | Stand ausdrücklich sichern |
+| `REBOOT` | Neustart des Boards |
+| `PING` | lebt die Station? |
+
+Rahmenformat ist schlichter Text: Befehl `C>POWER 20`, Antwort `A>POWER 20 dBm`.
+Beides wird nie weitergegeben — Befehle werden verbraucht, Antworten ignoriert.
+
+`lora-raw.service` hält UDP 1702 dauerhaft und kann als einziger senden. Er hat
+deshalb einen **Steuereingang auf 127.0.0.1:1703**: was dort ankommt, wird beim
+nächsten `PULL_DATA` des Gateways gefunkt. `lora_cmd.py` schickt den Befehl
+dorthin und wartet über MQTT `lora/raw` auf die Antwort.
+
+Nachgemessen von dell aus:
+
+```
+gesendet: C>POWER 17
+Antwort: POWER 17 dBm   (RSSI -101, SNR 8.8)
+```
