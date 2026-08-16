@@ -526,3 +526,49 @@ kein Defekt, sondern der beste schnelle Test, in welchem Modus das Gerät steht.
 information", read-only. Eine byteweise Bedeutung gibt Ebyte nicht an; das
 Gerät hier liefert `00 22 10 1e 0b 00 00`. Ohne Spezifikation ist das ein
 Rohwert und keine Version.
+
+---
+
+# E22-900 als Empfänger für den TrackerD
+
+Ein blankes **E22-900** an einem CH340-USB-Adapter (`/dev/ttyUSB0`) spricht
+dasselbe Registerprotokoll wie das E90-DTU(900SL33) — `python/e90ser.py`
+liest und schreibt es unverändert.
+
+Auf den TrackerD abgestimmte Konfiguration:
+
+```
+00 00 00 62 20 12 80 00 00
+│  │  │  │  │  │  └── REG3 0x80: RSSI-Byte an, transparent
+│  │  │  │  │  └───── REG2 0x12: Kanal 18 = 868.125 MHz
+│  │  │  │  └──────── REG1 0x20: Paket 240 B, Umgebungs-RSSI an, Leistung max
+│  │  │  └─────────── REG0 0x62: 9600 8N1, Luftrate 2.4k
+│  │  └────────────── NETID 0
+└──┴───────────────── Adresse 0x0000
+```
+
+Adresse und NETID entsprechen dem, was der TrackerD in seine Ebyte-Rahmen
+schreibt. Die **Paketgröße muss von 32 auf 240 Byte**: ein Alarm mit Position
+und Messwerten ist über 50 Byte lang und käme sonst zerstückelt heraus.
+
+**Die Luftrate „2.4k" ist auch hier SF11/BW500.** Gemessen, indem der Pico
+dieselbe Nutzlast nacheinander auf fünf Modulationen sendete — durch kam
+ausschließlich SF11/BW500:
+
+```
+E22 EMPFANGEN: b'PICO-SF11BW500\xdc'
+```
+
+Das Modul entpackt den Ebyte-Kopf selbst und hängt das RSSI-Byte an
+(`\xdc` = −110 dBm).
+
+## Empfangspfad prüfen, bevor man die Konfiguration verdächtigt
+
+Beim ersten Aufbau hörte das E22 den TrackerD nicht, obwohl der Pico ihn mit
+−19 dBm empfing. Die Konfiguration war aber in Ordnung — der Pico kam
+unmittelbar daneben nur mit **−110 dBm** an. Rund 90 dB Dämpfung auf
+kürzester Strecke heißt: Antenne fehlt oder sitzt nicht.
+
+Der Test dafür ist billig und eindeutig: **eine bekannte Quelle direkt daneben
+senden lassen und den gemeldeten RSSI ansehen.** Ohne diese Referenz sucht man
+den Fehler in der Konfiguration, wo keiner ist.
