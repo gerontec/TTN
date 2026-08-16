@@ -16,7 +16,7 @@
 #include <LoRa.h>
 #include <esp_ota_ops.h>
 
-#define FW_VERSION "TrackerD-P2P v1.7"
+#define FW_VERSION "TrackerD-P2P v2.0"
 
 /* Pinbelegung laut Dragino-Pinmapping (README des TrackerD-Repos) */
 #define PIN_SCK    5
@@ -30,16 +30,25 @@
 #define LED_BLUE   2
 #define LED_GREEN 13
 
-/* Der rote Alarmknopf. Pin und Polaritaet aus der Dragino-LoRaWAN-Firmware,
- * extiButtonLS.h:9 und extiButtonLS.cpp:5:
+/* Der rote Alarmknopf -- **Pin noch nicht gefunden, der Knopf loest nicht aus.**
  *
- *     #define BUTTON_PIN1 25
- *     OneButton button1(BUTTON_PIN1, false, false);
+ * Dragino nennt zwei: extiButtonLS.h:9 BUTTON_PIN1 25 (fuer sensor_type 13,
+ * also dieses Geraet) und extiButton.h:9 BUTTON_PIN 0. TrackerD.ino fuehrt
+ * beide als ext1-Wakeup-Masken (0x1 und 0x2000000).
  *
- * Die beiden false heissen activeLow=false und pullupActive=false: der Pin
- * liegt im Ruhezustand LOW und geht beim Druecken auf HIGH, ein interner
- * Pullup wird nicht gebraucht. Wer hier von der ueblichen Active-Low-Taste
- * ausgeht, baut die Logik verkehrt herum ein. */
+ * Gemessen mit AT+BTN, alle Kandidaten gleichzeitig mit Pullup, waehrend der
+ * Knopf 12 s durchgehend gehalten wurde: 48 von 49 Momentaufnahmen identisch.
+ * Weder 25 noch 0, 32, 33, 34, 35, 36, 39 ruehren sich.
+ *
+ * Zwei Irrwege, die dokumentiert bleiben sollen:
+ *   - Erste Messung ohne Pullup: freischwebende Eingaenge liefern Rauschen,
+ *     das wie Flanken aussieht. Immer mit Pull messen.
+ *   - GPIO 0 schien zu folgen, wird aber von der Auto-Reset-Schaltung ueber
+ *     DTR getrieben. Mit s.dtr=False steht er konstant -- es war der Adapter,
+ *     nicht der Knopf.
+ *
+ * Naechster Schritt: die restlichen freien Pins absuchen (4, 12, 14, 16, 17,
+ * 21, 22) oder das Geraet oeffnen. Bis dahin loest nur AT+ALARM aus. */
 #define PIN_BUTTON 25
 
 /* Haltezeit bis zum Alarm. Dragino nimmt dafuer sys.exit_alarm_time, in
@@ -77,8 +86,10 @@ static bool     cfgImplicit = false;   /* impliziter Header (feste Laenge) */
 static int      cfgImplicitLen = 32;
 
 /* LDRO: -1 = automatisch wie die Bibliothek es rechnet, 0/1 = erzwungen.
- * Fuer Ebyte muss es 1 sein, obwohl die Symboldauer unter 16 ms liegt. */
-static int      cfgLdro   = -1;
+ * Muss zum Empfangsprofil oben passen, und das ist das Ebyte-Profil: dort ist
+ * LDRO 1, obwohl die Symboldauer unter 16 ms liegt und die Bibliothek von
+ * selbst auf 0 kaeme. Beim Senden setzt funkProfil() es ohnehin je Profil. */
+static int      cfgLdro   = 1;
 
 /* Betriebsart: 0 = nur Rohkanal, 1 = nur Ebyte, 2 = beides nacheinander.
  *
@@ -525,6 +536,42 @@ static void handleLine(String line)
         Serial.println("OK");
         return;
     }
+    /* Pin-Diagnose: mehrere Kandidaten gleichzeitig beobachten und jede
+     * Aenderung melden. Der Knopfpin steht zwar in Draginos extiButtonLS
+     * (GPIO 25), das gilt aber fuer deren Firmware -- ob er unter dieser
+     * ohne die dortige Initialisierung genauso liegt, muss gemessen werden.
+     * Die Kandidaten sind freie Pins; SPI (5,18,19,23,26,27), LEDs (2,13,15)
+     * und Flash (6-11) bleiben aussen vor. */
+    if ((a = argOf(line, "AT+BTN"))) {
+        static const int kandidaten[] = { 0, 25, 32, 33, 34, 35, 36, 39 };
+        const int anzahl = sizeof(kandidaten) / sizeof(kandidaten[0]);
+        int secs = *a ? atoi(a) : 15;
+        if (secs < 1) secs = 1;
+        if (secs > 120) secs = 120;
+        /* Pullup einschalten, sonst schwebt der Eingang und man misst Rauschen
+         * statt des Knopfes. GPIO34-39 sind reine Eingaenge ohne interne
+         * Widerstaende -- die bleiben zwangslaeufig offen und sind hier nur
+         * der Vollstaendigkeit halber dabei. */
+        for (int i = 0; i < anzahl; i++) {
+            int p = kandidaten[i];
+            pinMode(p, (p >= 34) ? INPUT : INPUT_PULLUP);
+        }
+        delay(20);
+        Serial.print("+BTN: Pins ");
+        for (int i = 0; i < anzahl; i++) Serial.printf("%d ", kandidaten[i]);
+        Serial.printf("\r\n+BTN: %d s, Momentaufnahme alle 250 ms - "
+                      "druecken und wieder loslassen\r\n", secs);
+        uint32_t t0 = millis();
+        while (millis() - t0 < (uint32_t)secs * 1000) {
+            Serial.printf("+BTN %5lu ", (unsigned long)(millis() - t0));
+            for (int i = 0; i < anzahl; i++)
+                Serial.print(digitalRead(kandidaten[i]) ? '1' : '0');
+            Serial.println();
+            delay(250);
+        }
+        Serial.println("+BTN: fertig\r\nOK");
+        return;
+    }
     /* Denselben Alarm ohne Knopf ausloesen -- fuer Tests, wenn niemand am
      * Geraet steht. */
     if (!strcasecmp(line.c_str(), "AT+ALARM")) {
@@ -541,7 +588,7 @@ void setup()
     pinMode(LED_RED, OUTPUT);
     pinMode(LED_BLUE, OUTPUT);
     pinMode(LED_GREEN, OUTPUT);
-    pinMode(PIN_BUTTON, INPUT);     /* active high, kein Pullup noetig */
+    pinMode(PIN_BUTTON, INPUT_PULLUP);   /* Pin unbestaetigt, siehe oben */
     digitalWrite(LED_RED, LOW);
     digitalWrite(LED_BLUE, LOW);
     digitalWrite(LED_GREEN, LOW);
