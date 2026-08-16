@@ -1,45 +1,39 @@
-"""Relaisstelle Brauneck: gibt den Krisenkanal aus dem Lenggrieser Tal
-ins naechste Tal (Bad Heilbrunn) weiter.
+"""Relaisstelle Brauneck: ein gemeinsamer Kanal, jeder hoert jeden.
 
-Zwei Richtungen ueber einen Empfangskanal:
+    Nodes am Berg   ─┐
+    TrackerD        ─┤
+                     ├─►  Pico Brauneck (~1550 m)  ─►  gibt jedes Paket
+    DLOS8N Lenggries ─┤        868.125 SF7               genau einmal weiter
+    Bad Heilbrunn   ─┘         alle auf demselben Kanal
 
-    dell --UDP--> DLOS8N Lenggries --868.125 SF7--> Pico --869.525 SF12--> Bad Heilbrunn
-    TrackerD ---------------------- 868.125 SF7--> Pico --868.125 SF7---> DLOS8N Lenggries
+Alle Teilnehmer arbeiten auf **einer** Frequenz mit **einem** Spreizfaktor.
+Nur so kann ein einzelnes Funkmodul jeden hoeren und jeden erreichen -- es kann
+immer nur auf einem Kanal lauschen. Das ist dasselbe Flutungsverfahren, das
+Meshtastic und Ebytes Broadcast-Modus benutzen.
 
-Der Pico hat nur ein Funkmodul und kann immer nur auf einem Kanal lauschen.
-Gateway und TrackerD senden beide auf 868.125 SF7, also entscheidet der Inhalt
-ueber die Richtung: was mit "L>" beginnt, kommt aus dem Tal und geht hinaus;
-alles Uebrige gilt als Uplink aus dem Feld und geht nach Lenggries.
+Die Reichweite reicht dafuer: 14 dBm ergeben auf 10 km Sichtverbindung rund
+-93 dBm gegen -123 dBm Empfindlichkeit bei SF7, also etwa 30 dB Reserve. Den
+Sprung ins Nachbartal traegt der Bergstandort, nicht die Leistung.
 
-Eigenecho wird in den beiden Richtungen unterschiedlich verhindert:
+**Eigenecho** verhindert jetzt allein die Marker-Logik -- die fruehere
+physikalische Trennung ueber verschiedene Frequenzen und Spreizfaktoren faellt
+mit dem gemeinsamen Kanal weg:
 
-**Talwaerts physikalisch.** Ausgang und Eingang unterscheiden sich in Frequenz
-*und* Spreizfaktor. Spreizfaktoren sind quasi-orthogonal, ein SF7-Empfaenger
-demoduliert SF12 gar nicht -- der Repeater ist fuer diese Aussendung
-strukturell taub, ohne dass eine Logik greifen muesste.
+* Waehrend des Sendens ist der Empfaenger taub; die eigene Aussendung hoert die
+  Station nie unmittelbar.
+* Jedes weitergegebene Paket bekommt den Marker ``R<sprung>>``. Kommt es ueber
+  eine zweite Relaisstelle zurueck, wird der Zaehler erkannt und ab MAX_HOPS
+  nicht mehr weitergereicht.
+* Der Dublettenspeicher schluesselt auf den Inhalt **ohne** Marker. Derselbe
+  Text geht damit fuenf Minuten lang kein zweites Mal hinaus, ueber welchen
+  Umweg er auch ankommt.
 
-**Bergwaerts per Marker.** Der Uplink nach Lenggries geht zwangslaeufig auf
-demselben Kanal hinaus, auf dem auch gelauscht wird; ein zweites Funkmodul
-gibt es nicht. Waehrend des Sendens ist der Empfaenger ohnehin taub, aber gegen
-Umwege ueber eine zweite Relaisstelle traegt jedes weitergegebene Paket einen
-Marker mit Sprungzaehler. Was den Marker schon hat, wird nicht noch einmal
-weitergegeben. Ein Dublettenspeicher haelt denselben Inhalt zusaetzlich fuer
-fuenf Minuten zurueck.
+Mehrere Relaisstellen sind damit moeglich: aus R1> wird R2> und so fort, bis
+MAX_HOPS erreicht ist.
 
-Warum der Ausgang auf 869.525 liegt: das Band 869.4-869.65 MHz erlaubt 500 mW
-ERP bei 10 % Sendezeit, waehrend auf 868.125 nur 25 mW bei 1 % zulaessig sind.
-Das sind +8 dB Leistung und das zehnfache Zeitbudget. Zusammen mit SF12 statt
-SF7 (rund 14 dB empfindlicher) ist das der Unterschied, der ein Tal weiter
-traegt.
-
-Preis dafuer: das DLOS8N kann 869.525 nicht mithoeren (radio_1 sitzt auf 868.5
-und reicht +/-400 kHz). Damit trotzdem sichtbar bleibt, dass das Relais
-arbeitet, schickt es eine kurze Quittung auf dem Eingangskanal zurueck, die im
-Gateway-Log auftaucht.
-
-  import repeater
-  repeater.run()                 # Dauerbetrieb
-  repeater.run(telemetrie=False) # ohne Quittung an das Gateway
+Fernwirken siehe fernwirk.py. Frequenz und Spreizfaktor sind dort bewusst
+**nicht** aenderbar -- in einem Einkanalnetz saegt man sich damit den Ast ab,
+auf dem man sitzt.
 """
 import machine
 import utime
@@ -47,48 +41,31 @@ import utime
 import fernwirk
 import lora_p2p
 
-# --- Eingang: was das Gateway in Lenggries sendet -------------------------
-IN_FREQ, IN_SF, IN_BW = 868125000, 7, 125000
-
-# --- Ausgang: langer Sprung ins naechste Tal ------------------------------
-# 869.4-869.65 MHz: 500 mW ERP, 10 % Sendezeit
-OUT_FREQ, OUT_SF, OUT_BW = 869525000, 12, 125000
-OUT_POWER = 22                  # dBm, Chipmaximum; ERP bleibt unter 500 mW
-
-# --- Richtungskennung -----------------------------------------------------
-# Der Pico hat nur ein Funkmodul und kann immer nur auf einem Kanal lauschen.
-# Gateway und TrackerD senden beide auf dem Eingangskanal, also muss der Inhalt
-# sagen, wohin es weitergeht: alles aus Lenggries traegt "L>", alles Uebrige
-# gilt als Uplink aus dem Feld und geht nach Lenggries.
-TAL_PRAEFIX = b"L>"
+# --- Der gemeinsame Kanal -------------------------------------------------
+KANAL_FREQ, KANAL_SF, KANAL_BW = 868125000, 7, 125000
 
 # --- Schleifenschutz ------------------------------------------------------
 MARKER = b"R"                   # Praefix "R<sprung>>", z.B. b"R1>"
-MAX_HOPS = 2                    # danach wird nicht mehr weitergegeben
+MAX_HOPS = 3                    # danach wird nicht mehr weitergegeben
 DEDUP_S = 300                   # gleicher Inhalt fuer 5 min gesperrt
 DEDUP_MAX = 24
 
 # --- Sendezeitbudget ------------------------------------------------------
-# Nach jeder Aussendung eine Sperrzeit von Luftzeit * (100/Prozent - 1).
-# Das ist die uebliche, konservative Auslegung des Duty Cycle.
-OUT_DUTY = 10.0                 # Prozent, Band 869.4-869.65
-IN_DUTY = 1.0                   # Prozent, Band 868.0-868.6
-
-TELEM_EVERY = 1                 # Quittung nach jedem n-ten weitergegebenen Paket
+# Sperrzeit = Luftzeit * (100/Prozent - 1), die uebliche konservative Auslegung.
+# 868.0-868.6 MHz erlaubt 1 %; bei ~72 ms Luftzeit sind das gut 7 s Sperre.
+DUTY = 1.0
 
 # --- Systemtakt -----------------------------------------------------------
-# Die Station haengt am Panel ohne Puffer; jedes eingesparte Milliampere
-# entlastet die Versorgung und senkt den Spannungseinbruch unter Last. Der
-# Prozessor wartet ohnehin nur auf den Funkchip -- Modulation und Timing macht
-# der SX1262 selbst, 125 MHz sind dafuer sinnlos.
-# Abgetastet: 125/96/64/48/32/24 MHz laufen sauber, bei 18 MHz liefert der SPI
-# Muell (Syncword-Register liest a2a2 statt 3444) und 12 MHz lehnt MicroPython
-# ab. 48 MHz laesst reichlich Abstand zu dieser Kante.
+# Die Station haengt am Panel ohne Puffer; jedes eingesparte Milliampere senkt
+# den Spannungseinbruch unter Last. Der Prozessor wartet ohnehin nur auf den
+# Funkchip. Abgetastet: 125/96/64/48/32/24 MHz laufen sauber, bei 18 MHz
+# liefert der SPI Muell (Syncword liest a2a2 statt 3444), 12 MHz lehnt
+# MicroPython ab. 48 MHz laesst reichlich Abstand zu dieser Kante.
 TAKT_HZ = 48000000
 
 
 class Budget:
-    """Haelt die Sperrzeit eines Bandes nach."""
+    """Haelt die Sperrzeit des Bandes nach."""
 
     def __init__(self, prozent):
         self.faktor = 100.0 / prozent - 1.0
@@ -98,8 +75,7 @@ class Budget:
         return utime.ticks_diff(utime.ticks_ms(), self.frei_ab) >= 0
 
     def wartezeit_s(self):
-        d = utime.ticks_diff(self.frei_ab, utime.ticks_ms())
-        return max(0, d) / 1000.0
+        return max(0, utime.ticks_diff(self.frei_ab, utime.ticks_ms())) / 1000.0
 
     def belegen(self, luftzeit_ms):
         self.frei_ab = utime.ticks_add(utime.ticks_ms(),
@@ -107,22 +83,22 @@ class Budget:
 
 
 class Dedup:
-    """Merkt sich zuletzt weitergegebene Inhalte."""
+    """Merkt sich zuletzt weitergegebene Inhalte, ohne Marker."""
 
     def __init__(self):
         self.eintraege = {}
 
-    def bekannt(self, roh):
+    def bekannt(self, schluessel):
         jetzt = utime.ticks_ms()
         for k in [k for k, t in self.eintraege.items()
                   if utime.ticks_diff(jetzt, t) > DEDUP_S * 1000]:
             del self.eintraege[k]
-        if roh in self.eintraege:
+        if schluessel in self.eintraege:
             return True
         if len(self.eintraege) >= DEDUP_MAX:
-            aeltester = min(self.eintraege, key=lambda k: self.eintraege[k])
-            del self.eintraege[aeltester]
-        self.eintraege[roh] = jetzt
+            del self.eintraege[min(self.eintraege,
+                                   key=lambda k: self.eintraege[k])]
+        self.eintraege[schluessel] = jetzt
         return False
 
 
@@ -134,59 +110,54 @@ def hops(nutzlast):
     return 0
 
 
+def kern(nutzlast):
+    """Inhalt ohne Marker -- der Schluessel fuer den Dublettenspeicher."""
+    return nutzlast[3:] if hops(nutzlast) else nutzlast
+
+
 def markieren(nutzlast, n):
-    return MARKER + bytes([0x30 + n]) + b">" + nutzlast
+    return MARKER + bytes([0x30 + n]) + b">" + kern(nutzlast)
 
 
-def _rx_modus(r):
-    r.set_frequency(IN_FREQ)
-    r.set_modulation(IN_SF, IN_BW, lora_p2p.CR)
-
-
-def _tx_modus(r, freq, sf, bw, power):
-    r.set_frequency(freq)
-    r.set_modulation(sf, bw, lora_p2p.CR)
-    r.set_power(power)
+def _kanal(r):
+    r.set_frequency(KANAL_FREQ)
+    r.set_modulation(KANAL_SF, KANAL_BW, lora_p2p.CR)
 
 
 def run(telemetrie=None, verbose=True, dauer_s=0):
-    """dauer_s=0 heisst Dauerbetrieb, sonst Abbruch mit Bilanz.
-
-    Sendeleistung, Spreizfaktor und Frequenz talwaerts kommen aus der
-    gesicherten Konfiguration und lassen sich im Betrieb per Funk aendern
-    (siehe fernwirk.py) -- auf dem Berg gibt es keinen anderen Zugang."""
-    # Vor dem Funkchip: clk_peri haengt an clk_sys, ein vorher erzeugtes
-    # SPI-Objekt haette die falsche Teilung.
+    """dauer_s=0 heisst Dauerbetrieb, sonst Abbruch mit Bilanz."""
+    # Takt vor dem Funkchip stellen: clk_peri haengt an clk_sys, ein vorher
+    # erzeugtes SPI-Objekt haette die falsche Teilung.
     if machine.freq() != TAKT_HZ:
         machine.freq(TAKT_HZ)
         lora_p2p._radio = None
+
     r = lora_p2p.radio()
     start = utime.ticks_ms()
     konf = fernwirk.konf_laden()
     if telemetrie is not None:
         konf["telemetrie"] = telemetrie
-    aus = Budget(OUT_DUTY)
-    ein = Budget(IN_DUTY)
+    budget = Budget(DUTY)
     dedup = Dedup()
     gehoert = weiter = unterdrueckt = 0
-    stat = {"start": start, "weiter_auf": 0, "weiter_ab": 0,
-            "unterdrueckt": 0, "dedup": dedup, "reboot": False,
-            "konf_geaendert": False}
+    stat = {"start": start, "weiter": 0, "unterdrueckt": 0,
+            "dedup": dedup, "reboot": False, "konf_geaendert": False}
 
-    print("Relais Brauneck")
-    print("  Eingang : %.3f MHz  SF%d  BW%d" % (IN_FREQ / 1e6, IN_SF, IN_BW // 1000))
-    print("  Ausgang : %.3f MHz  SF%d  BW%d  %d dBm  (%.0f %% Sendezeit)"
-          % (konf["out_freq"] / 1e6, konf["out_sf"], OUT_BW // 1000,
-             konf["out_power"], OUT_DUTY))
-    print("  Takt    : %d MHz" % (machine.freq() // 1000000))
-    print("  Fernwirken: C>POWER <dBm> | SF | FREQ | STATUS | RELAY | SAVE | REBOOT")
+    print("Relais Brauneck -- ein Kanal, jeder hoert jeden")
+    print("  Kanal : %.3f MHz  SF%d  BW%d  %d dBm  (%.0f %% Sendezeit)"
+          % (KANAL_FREQ / 1e6, KANAL_SF, KANAL_BW // 1000,
+             konf["out_power"], DUTY))
+    print("  Takt  : %d MHz,  hoechstens %d Spruenge"
+          % (machine.freq() // 1000000, MAX_HOPS))
+    print("  Fernwirken: C>POWER <dBm> | STATUS | RELAY | TELEM | SAVE | REBOOT")
 
     while True:
         if dauer_s and utime.ticks_diff(utime.ticks_ms(), start) > dauer_s * 1000:
             print("Bilanz: %d gehoert, %d weitergegeben, %d unterdrueckt"
                   % (gehoert, weiter, unterdrueckt))
             return gehoert, weiter, unterdrueckt
-        _rx_modus(r)
+
+        _kanal(r)
         # Bewusst mit Zeitschranke statt endlos: so bleibt die Schleife
         # ansprechbar und kann Budget und Dubletten pflegen.
         got = r.recv(2000)
@@ -201,9 +172,10 @@ def run(telemetrie=None, verbose=True, dauer_s=0):
                 print("  verworfen: CRC-Fehler, RSSI %.0f" % rssi)
             continue
 
-        # Fernwirkbefehl? Wird ausgefuehrt und nie weitergegeben.
+        # Fernwirkbefehl: ausfuehren, nie weitergeben.
         if roh.startswith(fernwirk.BEFEHL_PRAEFIX):
             stat["unterdrueckt"] = unterdrueckt
+            stat["weiter"] = weiter
             stat["konf_geaendert"] = False
             text = fernwirk.ausfuehren(roh, konf, stat)
             # Sofort sichern: die Station laeuft solar und geht abends aus,
@@ -211,11 +183,12 @@ def run(telemetrie=None, verbose=True, dauer_s=0):
             if stat["konf_geaendert"]:
                 fernwirk.konf_sichern(konf)
             print("  Befehl %r -> %s" % (roh, text))
-            if ein.frei():
+            if budget.frei():
                 a = fernwirk.antwort(text)
-                _tx_modus(r, IN_FREQ, IN_SF, IN_BW, 14)
+                r.set_power(konf["out_power"])
                 r.send(a)
-                ein.belegen(lora_p2p.airtime_ms(len(a), sf=IN_SF, bw=IN_BW))
+                budget.belegen(lora_p2p.airtime_ms(len(a), sf=KANAL_SF,
+                                                   bw=KANAL_BW))
             if stat["reboot"]:
                 utime.sleep_ms(500)
                 machine.reset()
@@ -232,57 +205,34 @@ def run(telemetrie=None, verbose=True, dauer_s=0):
             continue
 
         n = hops(roh)
-        if n:
-            # Traegt bereits unseren Marker: entweder unsere eigene Aussendung
-            # ueber einen Umweg, oder die einer zweiten Relaisstelle.
+        if n >= MAX_HOPS:
             unterdrueckt += 1
             if verbose:
-                print("  verworfen: schon %d Sprung(e), %r" % (n, roh[:24]))
+                print("  verworfen: %d Spruenge erreicht, %r" % (n, roh[:24]))
             continue
 
-        if dedup.bekannt(roh):
+        # Schluessel ohne Marker: derselbe Inhalt geht nicht zweimal hinaus,
+        # ueber welchen Umweg er auch ankommt.
+        if dedup.bekannt(kern(roh)):
             unterdrueckt += 1
             if verbose:
                 print("  verworfen: Dublette, %r" % roh[:24])
             continue
 
-        # Richtung bestimmen: aus dem Tal hinaus, oder vom Feld nach Lenggries.
-        talwaerts = roh.startswith(TAL_PRAEFIX)
-        if talwaerts:
-            ziel = (konf["out_freq"], konf["out_sf"], OUT_BW, konf["out_power"])
-            budget = aus
-            wohin = "-> Bad Heilbrunn"
-        else:
-            ziel, budget = (IN_FREQ, IN_SF, IN_BW, 14), ein
-            wohin = "-> Lenggries"
-
         if not budget.frei():
             unterdrueckt += 1
-            print("  verworfen: Sendezeitbudget %s, noch %.1f s gesperrt"
-                  % (wohin, budget.wartezeit_s()))
+            print("  verworfen: Sendezeitbudget, noch %.1f s gesperrt"
+                  % budget.wartezeit_s())
             continue
 
-        raus = markieren(roh, 1)
-        luft = lora_p2p.airtime_ms(len(raus), sf=ziel[1], bw=ziel[2])
-        _tx_modus(r, *ziel)
+        raus = markieren(roh, n + 1)
+        luft = lora_p2p.airtime_ms(len(raus), sf=KANAL_SF, bw=KANAL_BW)
+        r.set_power(konf["out_power"])
         ok = r.send(raus)
         budget.belegen(luft)
         weiter += 1 if ok else 0
-        if ok:
-            stat["weiter_ab" if talwaerts else "weiter_auf"] += 1
+        stat["weiter"] = weiter
         stat["unterdrueckt"] = unterdrueckt
-        print("%s %s RSSI %.0f SNR %.1f  %.3f MHz SF%d %d dBm, %.0f ms, %r"
-              % ("weiter:" if ok else "TX-FEHLER:", wohin, rssi, snr,
-                 ziel[0] / 1e6, ziel[1], ziel[3], luft, roh[:32]))
-
-        # Quittung nur talwaerts: dorthin kann das Gateway nicht mithoeren,
-        # der Uplink nach Lenggries taucht dagegen selbst im Gateway-Log auf.
-        if konf["telemetrie"] and ok and talwaerts and weiter % TELEM_EVERY == 0 and ein.frei():
-            quittung = markieren(b"BRAUNECK %d/%d rssi%d" % (weiter, gehoert,
-                                                            int(rssi)), 9)
-            lq = lora_p2p.airtime_ms(len(quittung), sf=IN_SF, bw=IN_BW)
-            _tx_modus(r, IN_FREQ, IN_SF, IN_BW, 14)
-            r.send(quittung)
-            ein.belegen(lq)
-            if verbose:
-                print("  Quittung ans Gateway: %r" % quittung)
+        print("%s Sprung %d  RSSI %.0f SNR %.1f  %d dBm, %.0f ms, %r"
+              % ("weiter:" if ok else "TX-FEHLER:", n + 1, rssi, snr,
+                 konf["out_power"], luft, kern(roh)[:32]))

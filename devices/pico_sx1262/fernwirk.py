@@ -13,11 +13,12 @@ Rahmenformat, beides schlichter Text:
     Befehl:   C>POWER 20
     Antwort:  A>POWER 20 dBm
 
+Frequenz und Spreizfaktor sind bewusst **nicht** fernstellbar: alle Teilnehmer
+teilen sich einen Kanal, ein Wechsel wuerde die Station unerreichbar machen.
+
 Befehle:
 
-    POWER <dBm>       Sendeleistung talwaerts, 2..22   (der wichtigste)
-    SF <7..12>        Spreizfaktor talwaerts
-    FREQ <MHz>        Sendefrequenz talwaerts, z.B. 869.525
+    POWER <dBm>       Sendeleistung, 2..22   (der wichtigste)
     STATUS            Zaehler, Laufzeit, Konfiguration
     RELAY 0|1         Weitergabe aus- oder einschalten
     TELEM 0|1         Quittungen aus- oder einschalten
@@ -38,9 +39,7 @@ BEFEHL_PRAEFIX = b"C>"
 ANTWORT_PRAEFIX = b"A>"
 
 STANDARD = {
-    "out_freq": 869525000,
-    "out_sf": 12,
-    "out_power": 22,
+    "out_power": 14,
     "telemetrie": True,
     "relay_aktiv": True,
 }
@@ -85,35 +84,14 @@ def ausfuehren(roh, konf, stat):
         stat["konf_geaendert"] = True
         return "POWER %d dBm" % p
 
-    if name == b"SF":
-        try:
-            s = int(wert)
-        except (TypeError, ValueError):
-            return "SF: Zahl erwartet"
-        if not 7 <= s <= 12:
-            return "SF: nur 7..12"
-        konf["out_sf"] = s
-        stat["konf_geaendert"] = True
-        return "SF %d" % s
 
-    if name == b"FREQ":
-        try:
-            f = float(wert)
-        except (TypeError, ValueError):
-            return "FREQ: MHz erwartet"
-        if not 863.0 <= f <= 870.0:
-            return "FREQ: nur 863..870 MHz"
-        konf["out_freq"] = int(f * 1e6)
-        stat["konf_geaendert"] = True
-        return "FREQ %.3f MHz" % f
 
     if name == b"STATUS":
-        return "auf%d ab%d unt%d %ds %s SF%d %ddBm %.3f tel%d" % (
-            stat["weiter_auf"], stat["weiter_ab"], stat["unterdrueckt"],
+        return "weiter%d unt%d %ds %s %ddBm tel%d" % (
+            stat["weiter"], stat["unterdrueckt"],
             utime.ticks_diff(utime.ticks_ms(), stat["start"]) // 1000,
             "an" if konf["relay_aktiv"] else "AUS",
-            konf["out_sf"], konf["out_power"], konf["out_freq"] / 1e6,
-            1 if konf["telemetrie"] else 0)
+            konf["out_power"], 1 if konf["telemetrie"] else 0)
 
     if name == b"RELAY" and wert in ("0", "1"):
         konf["relay_aktiv"] = wert == "1"

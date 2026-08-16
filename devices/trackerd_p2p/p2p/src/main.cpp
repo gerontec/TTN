@@ -16,7 +16,7 @@
 #include <LoRa.h>
 #include <esp_ota_ops.h>
 
-#define FW_VERSION "TrackerD-P2P v1.0"
+#define FW_VERSION "TrackerD-P2P v1.3"
 
 /* Pinbelegung laut Dragino-Pinmapping (README des TrackerD-Repos) */
 #define PIN_SCK    5
@@ -30,20 +30,26 @@
 #define LED_BLUE   2
 #define LED_GREEN 13
 
-/* Defaults: EU868, passend zum Rohkanal des DLOS8N (chan_Lora_std, 868.125 MHz,
- * SF7, BW125).  Syncword 0x34 statt des privaten 0x12: der SX1302 kennt nur ein
- * Syncword fuer den ganzen Chip (lorawan_public), ein Node mit 0x12 wird vom
- * Gateway schlicht nicht gehoert.  Siehe gateway/RAWKANAL.md. */
+/* Defaults: EU868, passend zum gemeinsamen Kanal des Krisennetzes
+ * (Gateway DLOS8N chan_Lora_std, Relais Brauneck: 868.125 MHz, SF7, BW125).
+ *
+ * Syncword 0x34 (oeffentlich) statt des privaten 0x12: der SX1302 im Gateway
+ * kennt nur ein Syncword fuer den ganzen Chip (lorawan_public), und das Relais
+ * lauscht ebenfalls auf 0x34. Mit 0x12 wird der Node schlicht nicht gehoert.
+ * Die Konfiguration lebt nur im RAM, deshalb muss der Wert hier stehen und
+ * nicht per AT+SYNCWORD nachgereicht werden -- er waere nach jedem Reset weg. */
 static long     cfgFreq   = 868125000;
 static int      cfgSf     = 7;
 static long     cfgBw     = 125000;
 static int      cfgCr     = 5;      /* 5..8 entspricht 4/5..4/8 */
-static int      cfgPower  = 17;     /* dBm, PA_BOOST -- siehe RAWKANAL.md, 868.0-868.6 erlaubt 25 mW (14 dBm) */
+static int      cfgPower  = 17;     /* dBm, PA_BOOST */
 static int      cfgSync   = 0x34;
 static int      cfgPre    = 8;
 static bool     cfgCrc    = true;
 static bool     rxEnabled = true;
 static bool     hexOut    = false;  /* Empfang zusaetzlich als Hex */
+static bool     cfgImplicit = false;   /* impliziter Header (feste Laenge) */
+static int      cfgImplicitLen = 32;
 
 static uint32_t rxCount = 0, txCount = 0;
 
@@ -65,7 +71,7 @@ static void applyRadio()
     LoRa.setSyncWord(cfgSync);
     LoRa.setTxPower(cfgPower, PA_OUTPUT_PA_BOOST_PIN);
     if (cfgCrc) LoRa.enableCrc(); else LoRa.disableCrc();
-    if (rxEnabled) LoRa.receive();
+    if (rxEnabled) LoRa.receive(cfgImplicit ? cfgImplicitLen : 0);
 }
 
 static void printCfg()
@@ -78,6 +84,7 @@ static void printCfg()
     Serial.printf("SYNCWORD=0x%02X\r\n", cfgSync);
     Serial.printf("PREAMBLE=%d\r\n", cfgPre);
     Serial.printf("CRC=%d\r\n",     cfgCrc ? 1 : 0);
+    Serial.printf("IH=%d PLEN=%d\r\n", cfgImplicit ? 1 : 0, cfgImplicitLen);
     Serial.printf("RX=%d\r\n",      rxEnabled ? 1 : 0);
     Serial.printf("TXCNT=%lu RXCNT=%lu\r\n",
                   (unsigned long)txCount, (unsigned long)rxCount);
@@ -91,7 +98,7 @@ static void sendPacket(const uint8_t *buf, size_t len)
     LoRa.endPacket();
     txCount++;
     blink(LED_BLUE, 30);
-    if (rxEnabled) LoRa.receive();
+    if (rxEnabled) LoRa.receive(cfgImplicit ? cfgImplicitLen : 0);
     Serial.printf("+SEND: OK %u Byte\r\n", (unsigned)len);
 }
 
@@ -192,9 +199,123 @@ static void handleLine(String line)
     if ((a = argOf(line, "AT+HEX"))) {
         hexOut = atoi(a) != 0; Serial.println("OK"); return;
     }
+    if ((a = argOf(line, "AT+SCAN"))) {
+        /* Rohes RSSI mitschreiben. Zeigt Traeger auch dann, wenn die
+         * Demodulation scheitert - trennt "nichts kommt an" von
+         * "kommt an, aber falsche Modulationsparameter". */
+        int secs = *a ? atoi(a) : 5;
+        if (secs < 1) secs = 1;
+        if (secs > 60) secs = 60;
+        LoRa.receive();
+        int mn = 999, mx = -999;
+        long sum = 0, n = 0;
+        uint32_t t0 = millis();
+        while (millis() - t0 < (uint32_t)secs * 1000) {
+            int r = LoRa.rssi();
+            if (r < mn) mn = r;
+            if (r > mx) mx = r;
+            sum += r; n++;
+            delay(20);
+        }
+        Serial.printf("+SCAN: freq=%ld bw=%ld n=%ld min=%d max=%d avg=%.1f\r\n",
+                      cfgFreq, cfgBw, n, mn, mx, n ? (double)sum / n : 0.0);
+        Serial.println("OK");
+        return;
+    }
+    if ((a = argOf(line, "AT+BURST"))) {
+        /* Misst die Laenge der Energiepakete statt sie zu dekodieren.
+         * Die Symbolzeit ist 2^SF/BW, die Sendedauer skaliert damit
+         * direkt mit SF und BW - aus der Burstlaenge laesst sich also
+         * ablesen, womit die Gegenstelle moduliert. */
+        int secs = *a ? atoi(a) : 10;
+        if (secs < 1) secs = 1;
+        if (secs > 60) secs = 60;
+        LoRa.receive();
+        const int thresh = -90;
+        bool in = false;
+        uint32_t start = 0;
+        int peak = -999, bursts = 0;
+        uint32_t t0 = millis();
+        Serial.printf("+BURST: Schwelle %d dBm, %d s\r\n", thresh, secs);
+        while (millis() - t0 < (uint32_t)secs * 1000) {
+            int r = LoRa.rssi();
+            if (!in && r > thresh) {
+                in = true; start = millis(); peak = r;
+            } else if (in) {
+                if (r > peak) peak = r;
+                if (r <= thresh) {
+                    uint32_t len = millis() - start;
+                    in = false;
+                    if (len >= 3 && bursts < 40) {
+                        Serial.printf("  burst %2d: %4lu ms, peak %d dBm\r\n",
+                                      ++bursts, (unsigned long)len, peak);
+                    }
+                }
+            }
+        }
+        Serial.printf("+BURST: %d Pakete\r\nOK\r\n", bursts);
+        return;
+    }
+    if ((a = argOf(line, "AT+IRQ"))) {
+        /* Rohe Modem-IRQ-Flags. ValidHeader ohne RxDone heisst: SF und BW
+         * stimmen, es hakt danach. Gar kein Flag heisst: falsches SF/BW,
+         * falsches Syncword oder impliziter Header. */
+        int secs = *a ? atoi(a) : 10;
+        if (secs < 1) secs = 1;
+        if (secs > 60) secs = 60;
+        LoRa.receive();
+        uint8_t seen = 0;
+        uint32_t t0 = millis();
+        while (millis() - t0 < (uint32_t)secs * 1000) {
+            uint8_t f = LoRa.readIrqFlags();
+            if (f) { seen |= f; LoRa.clearIrqFlags(f); }
+            delayMicroseconds(500);
+        }
+        Serial.printf("+IRQ: 0x%02X  rxtimeout=%d rxdone=%d crcerr=%d "
+                      "validheader=%d caddetect=%d\r\n", seen,
+                      !!(seen & 0x80), !!(seen & 0x40), !!(seen & 0x20),
+                      !!(seen & 0x10), !!(seen & 0x01));
+        Serial.println("OK");
+        return;
+    }
+    if ((a = argOf(line, "AT+IH"))) {
+        if (!*a) { Serial.printf("%d\r\nOK\r\n", cfgImplicit ? 1 : 0); return; }
+        cfgImplicit = atoi(a) != 0;
+        applyRadio(); Serial.println("OK"); return;
+    }
+    if ((a = argOf(line, "AT+PLEN"))) {
+        if (!*a) { Serial.printf("%d\r\nOK\r\n", cfgImplicitLen); return; }
+        cfgImplicitLen = atoi(a);
+        applyRadio(); Serial.println("OK"); return;
+    }
     if ((a = argOf(line, "AT+SEND"))) {
         if (!*a) { Serial.println("AT_PARAM_ERROR"); return; }
         sendPacket((const uint8_t *)a, strlen(a)); return;
+    }
+    if ((a = argOf(line, "AT+TXTEST"))) {
+        /* Dauerfeuer, damit die Gegenstelle in Ruhe RSSI messen kann. */
+        int secs = *a ? atoi(a) : 10;
+        if (secs < 1) secs = 1;
+        if (secs > 120) secs = 120;
+        static const uint8_t pat[32] = {
+            0x54, 0x52, 0x41, 0x43, 0x4B, 0x45, 0x52, 0x44,
+            0x54, 0x52, 0x41, 0x43, 0x4B, 0x45, 0x52, 0x44,
+            0x54, 0x52, 0x41, 0x43, 0x4B, 0x45, 0x52, 0x44,
+            0x54, 0x52, 0x41, 0x43, 0x4B, 0x45, 0x52, 0x44 };
+        uint32_t t0 = millis();
+        int sent = 0;
+        while (millis() - t0 < (uint32_t)secs * 1000) {
+            LoRa.idle();
+            LoRa.beginPacket();
+            LoRa.write(pat, sizeof(pat));
+            LoRa.endPacket();
+            sent++; txCount++;
+            digitalWrite(LED_BLUE, sent & 1);
+        }
+        digitalWrite(LED_BLUE, LOW);
+        if (rxEnabled) LoRa.receive();
+        Serial.printf("+TXTEST: %d Pakete in %d s\r\nOK\r\n", sent, secs);
+        return;
     }
     if ((a = argOf(line, "AT+SENDB"))) {
         size_t n = strlen(a);
