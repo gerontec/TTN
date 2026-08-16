@@ -16,7 +16,7 @@
 #include <LoRa.h>
 #include <esp_ota_ops.h>
 
-#define FW_VERSION "TrackerD-P2P v1.3"
+#define FW_VERSION "TrackerD-P2P v1.4"
 
 /* Pinbelegung laut Dragino-Pinmapping (README des TrackerD-Repos) */
 #define PIN_SCK    5
@@ -48,6 +48,10 @@ static int      cfgPre    = 8;
 static bool     cfgCrc    = true;
 static bool     rxEnabled = true;
 static bool     hexOut    = false;  /* Empfang zusaetzlich als Hex */
+/* Absenderkennung, vier Hexstellen. Vorgabe sind die letzten vier Stellen der
+ * DevEUI A840414F1188076C - damit ist sie ohne Vergabeliste eindeutig. Muss
+ * gueltiges Hex sein, sonst liest das Relais den Rahmen als "ohne Kennung". */
+static char     cfgId[5]  = "076C";
 static bool     cfgImplicit = false;   /* impliziter Header (feste Laenge) */
 static int      cfgImplicitLen = 32;
 
@@ -81,6 +85,7 @@ static void printCfg()
     Serial.printf("BW=%ld\r\n",     cfgBw);
     Serial.printf("CR=4/%d\r\n",    cfgCr);
     Serial.printf("POWER=%d\r\n",   cfgPower);
+    Serial.printf("ID=%s\r\n",      cfgId);
     Serial.printf("SYNCWORD=0x%02X\r\n", cfgSync);
     Serial.printf("PREAMBLE=%d\r\n", cfgPre);
     Serial.printf("CRC=%d\r\n",     cfgCrc ? 1 : 0);
@@ -90,16 +95,28 @@ static void printCfg()
                   (unsigned long)txCount, (unsigned long)rxCount);
 }
 
+/* Jedes Paket traegt "IIII>" voran. Der Praefix sitzt hier und nicht in den
+ * einzelnen AT-Befehlen, damit AT+SEND und AT+SENDB ihn gleichermassen
+ * bekommen. AT+TXTEST bleibt bewusst aussen vor: das ist ein rohes Messmuster
+ * fuer die RSSI-Messung der Gegenstelle, keine Nachricht. */
 static void sendPacket(const uint8_t *buf, size_t len)
 {
+    uint8_t out[255];
+    size_t hdr = 0;
+    for (const char *p = cfgId; *p; ++p) out[hdr++] = (uint8_t)*p;
+    out[hdr++] = '>';
+    if (len > sizeof(out) - hdr) len = sizeof(out) - hdr;
+    memcpy(out + hdr, buf, len);
+
     LoRa.idle();
     LoRa.beginPacket();
-    LoRa.write(buf, len);
+    LoRa.write(out, hdr + len);
     LoRa.endPacket();
     txCount++;
     blink(LED_BLUE, 30);
     if (rxEnabled) LoRa.receive(cfgImplicit ? cfgImplicitLen : 0);
-    Serial.printf("+SEND: OK %u Byte\r\n", (unsigned)len);
+    Serial.printf("+SEND: OK %u Byte (Kennung %s)\r\n",
+                  (unsigned)(hdr + len), cfgId);
 }
 
 static int hexVal(char c)
@@ -176,6 +193,16 @@ static void handleLine(String line)
         int v = atoi(a);
         if (v < 2 || v > 20) { Serial.println("AT_PARAM_ERROR"); return; }
         cfgPower = v; applyRadio(); Serial.println("OK"); return;
+    }
+    if ((a = argOf(line, "AT+ID"))) {
+        if (!*a) { Serial.printf("%s\r\nOK\r\n", cfgId); return; }
+        if (strlen(a) != 4) { Serial.println("AT_PARAM_ERROR"); return; }
+        for (int i = 0; i < 4; i++) {
+            if (hexVal(a[i]) < 0) { Serial.println("AT_PARAM_ERROR"); return; }
+            cfgId[i] = (a[i] >= 'a' && a[i] <= 'f') ? a[i] - 32 : a[i];
+        }
+        cfgId[4] = 0;
+        Serial.printf("ID=%s\r\nOK\r\n", cfgId); return;
     }
     if ((a = argOf(line, "AT+SYNCWORD"))) {
         if (!*a) { Serial.printf("0x%02X\r\nOK\r\n", cfgSync); return; }
