@@ -16,8 +16,10 @@
 #include <LoRa.h>
 #include <esp_ota_ops.h>
 #include <esp_system.h>
+#include <math.h>
+#include <Wire.h>
 
-#define FW_VERSION "TrackerD-P2P v2.9"
+#define FW_VERSION "TrackerD-P2P v3.2"
 
 /* Pinbelegung laut Dragino-Pinmapping (README des TrackerD-Repos) */
 #define PIN_SCK    5
@@ -140,6 +142,36 @@ static uint32_t btnBis = 0, btnNaechste = 0;
 #define PINTX_FENSTER   300000UL   /* 5 min: lang genug, dass das Fenster nicht mitten im Test ablaeuft */
 static uint32_t pinTxBis = 0, pinTxNaechste = 0;
 
+/* GPS. Pins und Baudrate aus Draginos GPS.cpp:23
+ *     SerialGPS.begin(9600, SERIAL_8N1, 9, 10)   -> RX 9, TX 10
+ * und GPS.h:6/7 GPS_POWER 12, GPS_RESET 25.
+ *
+ * Gesendet wird nicht im festen Takt, sondern erst, wenn sich die Position um
+ * mehr als GPS_DELTA_M bewegt hat. Auf SF11/BW500 kostet jedes Paket Luftzeit;
+ * ein stehender Tracker soll den Kanal nicht belegen. Der erste gueltige Fix
+ * geht immer raus. */
+#define GPS_RX_PIN   9
+#define GPS_TX_PIN  10
+#define GPS_POWER   12
+#define GPS_RESET   25
+#define GPS_DELTA_M 100.0
+
+/* Temperatur und Feuchte: GXHT30, SHT3x-kompatibel. Adresse und Kommando aus
+ * Draginos GXHT30.h:6 (gxht_addr 0x44) und GXHT30.cpp:19 (0x2C 0x06, also
+ * Einzelmessung mit hoher Wiederholgenauigkeit, 6 Byte Antwort). Die
+ * Umrechnung ist woertlich aus GXHT30.cpp uebernommen. Wire.begin() ohne
+ * Argumente heisst SDA 21 / SCL 22. */
+#define SHT_ADDR 0x44
+
+static HardwareSerial SerialGPS(1);
+static bool   cfgGps     = true;
+static bool   gpsFix     = false;
+static double gpsLat = 0, gpsLon = 0;      /* letzte gueltige Position */
+static bool   gpsGesendet = false;         /* schon einmal gesendet? */
+static double gpsSendLat = 0, gpsSendLon = 0;  /* zuletzt gesendete Position */
+static char   nmea[100];
+static int    nmeaLen = 0;
+
 static uint32_t rxCount = 0, txCount = 0;
 
 static void blink(int pin, int ms)
@@ -179,6 +211,8 @@ static void printCfg()
     Serial.printf("IH=%d PLEN=%d\r\n", cfgImplicit ? 1 : 0, cfgImplicitLen);
     Serial.printf("RX=%d\r\n",      rxEnabled ? 1 : 0);
     Serial.printf("LDRO=%s\r\n",    cfgLdro < 0 ? "auto" : (cfgLdro ? "1" : "0"));
+    Serial.printf("GPS=%d fix=%d %.6f,%.6f\r\n",
+                  cfgGps ? 1 : 0, gpsFix ? 1 : 0, gpsLat, gpsLon);
     Serial.printf("EBYTE=%d (%s)\r\n", cfgEbyte,
                   cfgEbyte == SENDE_BEIDE ? "roh+Ebyte" :
                   (cfgEbyte == SENDE_EBYTE ? "nur Ebyte" : "nur roh"));
@@ -236,6 +270,66 @@ static void einmalSenden(const uint8_t *daten, size_t len)
     txCount++;
 }
 
+/* Grad in Meter, flache Naeherung. Fuer eine 100-m-Schwelle voellig
+ * ausreichend -- die Erdkruemmung spielt auf der Strecke keine Rolle. */
+static double abstandM(double lat1, double lon1, double lat2, double lon2)
+{
+    double dy = (lat2 - lat1) * 110540.0;
+    double dx = (lon2 - lon1) * 111320.0 * cos(lat1 * 0.017453292519943295);
+    return sqrt(dx * dx + dy * dy);
+}
+
+/* "4740.7381,N" -> 47.6789683. NMEA gibt Grad und Minuten zusammengeschrieben,
+ * die Gradzahl ist alles vor den letzten zwei Vorkommastellen. */
+static double nmeaGrad(const char *feld, char hemi)
+{
+    double roh = atof(feld);
+    int    grad = (int)(roh / 100.0);
+    double min  = roh - grad * 100.0;
+    double wert = grad + min / 60.0;
+    if (hemi == 'S' || hemi == 'W') wert = -wert;
+    return wert;
+}
+
+/* Nur $..RMC auswerten: enthaelt Gueltigkeit, Breite und Laenge in einem Satz.
+ * Felder: 1 Zeit, 2 A/V, 3 Breite, 4 N/S, 5 Laenge, 6 E/W */
+static void nmeaZeile(char *z)
+{
+    if (strlen(z) < 20 || z[0] != '$') return;
+    if (strncmp(z + 3, "RMC", 3) != 0) return;
+    char *f[8] = {0};
+    int n = 0;
+    for (char *p = z; *p && n < 8; ) {
+        f[n++] = p;
+        char *k = strchr(p, ',');
+        if (!k) break;
+        *k = 0;
+        p = k + 1;
+    }
+    if (n < 7 || !f[2] || f[2][0] != 'A') return;      /* kein gueltiger Fix */
+    if (!f[3] || !f[5] || !*f[3] || !*f[5]) return;
+    gpsLat = nmeaGrad(f[3], f[4] ? f[4][0] : 'N');
+    gpsLon = nmeaGrad(f[5], f[6] ? f[6][0] : 'E');
+    gpsFix = true;
+}
+
+/* Einzelmessung anstossen, 6 Byte lesen, umrechnen. Rueckgabe false, wenn der
+ * Sensor nicht antwortet -- dann geht das GPS-Paket ohne Messwerte raus statt
+ * mit erfundenen. */
+static bool shtLesen(float *tem, float *hum)
+{
+    Wire.beginTransmission(SHT_ADDR);
+    Wire.write(0x2C); Wire.write(0x06);
+    if (Wire.endTransmission() != 0) return false;
+    delay(20);                                  /* Messdauer, hohe Genauigkeit */
+    if (Wire.requestFrom(SHT_ADDR, 6) != 6) return false;
+    uint8_t d[6];
+    for (int i = 0; i < 6; i++) d[i] = Wire.read();
+    *tem = ((((d[0] * 256.0) + d[1]) * 175) / 65535.0) - 45;
+    *hum = ((((d[3] * 256.0) + d[4]) * 100) / 65535.0);
+    return true;
+}
+
 static void sendPacket(const uint8_t *buf, size_t len)
 {
     uint8_t out[255];
@@ -270,11 +364,22 @@ static void sendPacket(const uint8_t *buf, size_t len)
 
 /* Alarm senden. Geht durch sendPacket, bekommt also die Absenderkennung
  * "IIII>" wie jedes andere Paket -- das Relais wertet sie aus. */
+/* Alarm mit allem, was das Geraet weiss. Beim Alarm zaehlt die Position mehr
+ * als die Luftzeit, deshalb gehen Fix und Messwerte immer mit -- anders als
+ * bei der GPS-Meldung, die erst ab GPS_DELTA_M ausloest. Ohne gueltigen Fix
+ * bleibt es beim nackten ALARM, statt eine Position zu erfinden. */
 static void sendeAlarm(const char *grund)
 {
     digitalWrite(LED_RED, HIGH);
-    sendPacket((const uint8_t *)"ALARM", 5);
-    Serial.printf("+ALARM: gesendet (%s)\r\n", grund);
+    char txt[80];
+    int n = snprintf(txt, sizeof(txt), "ALARM");
+    if (gpsFix)
+        n += snprintf(txt + n, sizeof(txt) - n, ",%.6f,%.6f", gpsLat, gpsLon);
+    float tem = 0, hum = 0;
+    if (shtLesen(&tem, &hum))
+        n += snprintf(txt + n, sizeof(txt) - n, ",T%.1f,H%.1f", tem, hum);
+    sendPacket((const uint8_t *)txt, strlen(txt));
+    Serial.printf("+ALARM: gesendet (%s) %s\r\n", grund, txt);
     delay(150);
     digitalWrite(LED_RED, LOW);
 }
@@ -589,6 +694,11 @@ static void handleLine(String line)
     }
     /* Denselben Alarm ohne Knopf ausloesen -- fuer Tests, wenn niemand am
      * Geraet steht. */
+    if ((a = argOf(line, "AT+GPS"))) {
+        cfgGps = (*a == '1');
+        Serial.printf("GPS=%d\r\nOK\r\n", cfgGps ? 1 : 0);
+        return;
+    }
     if (!strcasecmp(line.c_str(), "AT+ALARM")) {
         sendeAlarm("AT+ALARM");
         Serial.println("OK");
@@ -642,6 +752,24 @@ void setup()
     Serial.printf("Pin-Funkdiagnose %lu s, Reihenfolge: ", PINTX_FENSTER / 1000);
     for (int i = 0; i < BTN_ANZAHL; i++) Serial.printf("%d ", btnPins[i]);
     Serial.println();
+    /* GPS einschalten. GPS_RESET nur kurz pulsen und die Leitung danach in
+     * Ruhe lassen -- sie ist am Geraet mehrfach belegt. */
+    pinMode(GPS_POWER, OUTPUT);
+    digitalWrite(GPS_POWER, HIGH);
+    pinMode(GPS_RESET, OUTPUT);
+    digitalWrite(GPS_RESET, LOW);
+    delay(20);
+    digitalWrite(GPS_RESET, HIGH);
+    SerialGPS.begin(9600, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+    Wire.begin();                               /* SDA 21 / SCL 22 */
+    {
+        float t = 0, h = 0;
+        if (shtLesen(&t, &h)) Serial.printf("GXHT30: %.1f C, %.1f %%\r\n", t, h);
+        else                  Serial.println("GXHT30: antwortet nicht");
+    }
+    Serial.printf("GPS an RX%d/TX%d, meldet ab %.0f m Bewegung\r\n",
+                  GPS_RX_PIN, GPS_TX_PIN, GPS_DELTA_M);
+
     Serial.println("bereit - AT+CFG zeigt alles, AT+LORAWAN geht zurueck");
 }
 
@@ -684,6 +812,35 @@ void loop()
             cfgEbyte = SENDE_ROH;          /* kurze Luftzeit fuer die Diagnose */
             sendPacket((const uint8_t *)txt, strlen(txt));
             cfgEbyte = alt;
+        }
+    }
+
+    /* GPS einlesen und bei Bedarf melden. */
+    if (cfgGps) {
+        while (SerialGPS.available()) {
+            char c = (char)SerialGPS.read();
+            if (c == '\n' || c == '\r') {
+                if (nmeaLen > 0) { nmea[nmeaLen] = 0; nmeaZeile(nmea); nmeaLen = 0; }
+            } else if (nmeaLen < (int)sizeof(nmea) - 1) {
+                nmea[nmeaLen++] = c;
+            }
+        }
+        if (gpsFix) {
+            double d = gpsGesendet
+                     ? abstandM(gpsSendLat, gpsSendLon, gpsLat, gpsLon)
+                     : GPS_DELTA_M + 1;      /* erster Fix geht immer raus */
+            if (d > GPS_DELTA_M) {
+                char txt[72];
+                float tem = 0, hum = 0;
+                if (shtLesen(&tem, &hum))
+                    snprintf(txt, sizeof(txt), "GPS%.6f,%.6f,T%.1f,H%.1f",
+                             gpsLat, gpsLon, tem, hum);
+                else
+                    snprintf(txt, sizeof(txt), "GPS%.6f,%.6f", gpsLat, gpsLon);
+                sendPacket((const uint8_t *)txt, strlen(txt));
+                gpsSendLat = gpsLat; gpsSendLon = gpsLon; gpsGesendet = true;
+                Serial.printf("+GPS: gesendet %s (Delta %.0f m)\r\n", txt, d);
+            }
         }
     }
 
