@@ -1,0 +1,380 @@
+# Pico ↔ Ebyte E90-DTU
+
+Stand **16.08.2026**. Es sind **zwei verschiedene Geräte** im Spiel, die man
+nicht verwechseln darf:
+
+| | E90-DTU(400SL30)E | E90-DTU(900SL22) |
+|---|---|---|
+| Band | 410.125–493.125 MHz | 850.125–930.125 MHz |
+| Anschluss | Ethernet, `192.168.4.101` | RS-232 (DB-9) / RS-485 |
+| Sendet auf | 433.125 MHz (Kanal 23) | 868.125 MHz (Kanal 6) |
+| Konfiguration | HTTP-JSON + UDP-AT | E32-Rahmen über RS-232 |
+| Stand | **beide Richtungen verifiziert** | Träger vermessen, Rahmen offen |
+
+Der 400er ist unten vollständig aufgeklärt. Der 900er steht am Ende in einem
+eigenen Abschnitt, mit dem, was gemessen ist, und dem, was nicht.
+
+Beide Strecken haben mit dem DLOS8N-Rohkanal nichts zu tun. Die
+Brauneck-Firmware (`repeater.py`, 868.125 MHz, Syncword 0x34) bleibt unberührt
+— auch wenn der 900er zufällig auf derselben Frequenz sitzt.
+
+## Werks-Syncwords
+
+Ebyte-Module lassen das LoRa-Syncword **nicht konfigurieren**; es ist ab Werk
+festgelegt und taucht in keinem Handbuch auf. Beide Werte hier sind an der Luft
+ausgemessen, indem der Empfänger den Syncword-Raum absucht und `HeaderValid`
+als Kriterium nimmt.
+
+| Gerät | Syncword | Register `0x0740` | Status |
+|---|---|---|---|
+| E90-DTU(400SL30)E | **0x58** | `54 84` | gemessen, Empfang verifiziert |
+| E90-DTU(900SL22) | offen | — | `0x00`–`0xFF` abgesucht, kein Treffer |
+
+Weder `0x12` (privat) noch `0x34` (öffentlich) trifft bei diesen Modulen zu —
+die naheliegende Annahme ist also falsch.
+
+**Warum der 900er-Wert noch fehlt, und warum die Suche unvollständig war.**
+`set_syncword(sw)` in `lora_p2p.py` spreizt ein Byte auf zwei Register:
+`(sw & 0xF0) | 0x04` und `((sw & 0x0F) << 4) | 0x04`. Beide Registerbytes haben
+damit **immer das untere Nibble 4**. Ein Durchlauf über `0x00`–`0xFF` deckt also
+nur 256 der 65536 Registerkombinationen ab. Für den 400er reichte das (`54 84`
+passt in dieses Raster), für den 900er nicht — dort muss der Registerraum
+direkt über `wrreg(0x0740, [a, b])` abgesucht werden, nicht über den Helfer.
+
+## Gegenstelle
+
+| | |
+|---|---|
+| Modell | Ebyte **E90-DTU(400SL30)E** |
+| Firmware | `FW-9181-0-10`, SN `S4201874S` |
+| MAC | `78-EE-4C-D7-EA-07` |
+| Netz | `192.168.4.101`, statisch, Web auf 80 (`admin`/`admin`) |
+| Datensockel | TCP **8886** — alles, was hier rein geht, geht auf die Luft |
+| Funkband | 410.125–493.125 MHz, 84 Kanäle à 1 MHz |
+
+## Das Band ist nicht verhandelbar
+
+Das E90 ist ein **400er** Modul. Es erreicht die 868.125 MHz der
+Brauneck-Strecke nicht — kein Konfigurationswert bringt es dorthin, weil
+Anpassnetzwerk, 30-dBm-PA und Antenne auf 433 MHz gebaut sind. Getroffen wird
+sich deshalb auf dem E90-Kanal 23:
+
+```
+410.125 MHz + 23 × 1 MHz = 433.125 MHz
+```
+
+Kanal 23 ist der Werkswert dieser Modulfamilie, deshalb stand er schon.
+
+Der Preis steht in [README.md](README.md) unter „Welcher Frequenzbereich?":
+der Rauschflur des Waveshare-Boards liegt bei 434 MHz mit −116/−117 dBm auf dem
+thermischen Grund, bei 868 MHz dagegen bei −106 dBm. Das Board lässt bei 433 MHz
+also kaum etwas durch, in beide Richtungen. Gemessen kam ein Signal des E90 mit
+**30 dBm Sendeleistung im selben Raum** nur mit −77 dBm an. Für den Tisch reicht
+das mit 15 dB SNR bequem, für eine Strecke über Land nicht.
+
+## Funkparameter
+
+| | Wert |
+|---|---|
+| Frequenz | **433.125 MHz** (E90-Kanal 23) |
+| Spreizfaktor | **SF7** |
+| Bandbreite | **BW 500 kHz** |
+| LDRO | **1** — nicht 0, siehe Fallen |
+| Coding Rate | 4/5 (für den Empfang belanglos, der Header trägt sie) |
+| Syncword | **0x58** → Register `0x0740` = `54 84` |
+| CRC | an, expliziter Header, IQ normal |
+| Luftzeit | ~32 ms für 15 Byte Nutzlast |
+
+Auf der E90-Seite entspricht das dem Luftraten-Index **5**, im Webinterface als
+„19.2k" etikettiert.
+
+## Rahmenformat
+
+Das E90 packt die Nutzlast in einen eigenen 8-Byte-Kopf und verknüpft sie mit
+`0x12`:
+
+```
+ 2c 17 XX YY 00 ff ff LL │ Nutzlast XOR 0x12
+ └─┬─┘ │  │  └───┬──┘ └┬─┘
+   │   │  │      │     └── Länge der Klartext-Nutzlast
+   │   │  │      └──────── Adresse 0xFFFF (Monitor)
+   │   │  └─────────────── XX ^ 0xA1
+   │   └────────────────── XOR über die Klartext-Nutzlast, dann ^ 0xA0
+   └────────────────────── fest
+```
+
+Beispiel, mitgeschnitten:
+
+```
+2c 17 f2 53 00 ff ff 0e 57 2b 22 3f 2c 42 5b 51 5d 32 22 23 21 18
+                        └── XOR 0x12 ──> "E90->PICO 013\n"
+```
+
+XOR über `E90->PICO 013\n` ist `0x52`; `0x52 ^ 0xA0` = `0xF2` = XX. ✓
+Gegenprobe am MAC-Beacon, das das E90 periodisch sendet: Nutzlast
+`78 ee 4c d7 ea 07`, XOR `0xE0`, `0xE0 ^ 0xA0` = `0x40` — genau das
+mitgeschnittene Byte. ✓
+
+**Ein Frame mit falschem XX wird verworfen.** Das war der Schlüssel: ein
+selbstgebauter Rahmen mit plausiblem, aber falschem XX blieb wirkungslos, ein
+*wortgleicher Replay* eines echten Frames wurde dagegen angenommen. Damit war
+klar, dass nur die beiden Prüfbytes fehlten und nicht das Format.
+
+Beim Empfang hängt das E90 seinerseits ein **RSSI-Byte** an, was
+`wlsdatarssienable` steuert: `b'Pico Nachricht 4\xae'` heißt −0xAE/2 = −87 dBm.
+
+## Wie die Parameter gefunden wurden
+
+Das Handbuch in `~/Dokumente/ebyte_E90DTU.pdf` gehört zum **900er** Modell und
+passt weder in der Frequenz noch in der Ratentabelle. Alles unten ist gemessen.
+
+**1. Sendet das Gerät überhaupt, und wo?** Ein RSSI-Sweep des Pico über
+432.0–434.5 MHz in 125-kHz-Schritten, während das E90 im Sekundentakt sendet:
+
+```
+432.750 MHz  −112 dBm      433.125 MHz  −76 dBm   ← Maximum
+432.875 MHz   −91 dBm      433.250 MHz  −86 dBm
+433.000 MHz   −85 dBm      433.375 MHz  −91 dBm
+                           433.500 MHz  −113 dBm
+```
+
+Sauberes Maximum auf 433.125 MHz. Die Schultern sind Filterdurchgriff des
+starken Signals, keine echte Signalbreite.
+
+**Vorsicht bei RSSI als Nachweis.** Eine Kontrollmessung mit *abgeschaltetem*
+Sender lieferte dieselben Pegelspitzen (−87 dBm) — das 433er ISM-Band ist voll
+von Fremdverkehr. Ein einzelner RSSI-Ausschlag beweist gar nichts; erst der
+Sweep mit klarem Maximum und die Gegenprobe ohne Sender tragen.
+
+**2. Welche Modulation?** Der SX1262 meldet `PreambleDetected` (IRQ-Bit 2)
+schon **vor** der Syncword-Prüfung. Damit lässt sich die Modulation unabhängig
+vom noch unbekannten Syncword einkreisen — 4 s Lauschen je Kombination:
+
+| | BW125 | BW250 | BW500 |
+|---|---|---|---|
+| SF6 | 0 | **14** | 7 |
+| SF7 | 1 | 0 | **21** |
+| SF8 | 0 | 2 | 0 |
+| SF9 | 0 | 0 | 0 |
+
+SF7/BW500 und SF6/BW250 haben dieselbe Chirprate (BW/2^SF = 3906.25) und sind
+für den Präambeldetektor nicht zu unterscheiden. Nur **SF7/BW500** rastet
+danach auch auf den Header ein; SF6/BW250 und SF5/BW125 empfangen nichts.
+
+**3. Welches Syncword?** Absuchen von `0x00`–`0x7F` bei SF7/BW500, je 1 s, mit
+`HeaderValid` als Kriterium. Treffer bei **0x58–0x5F** — alle acht schreiben
+dasselbe erste Registerbyte `0x54`, ausgewertet wird also nur dieses.
+
+**4. Warum trotzdem CRC-Fehler?** Siehe Fallen.
+
+## Fallen
+
+**1. LDRO muss 1 sein.** `set_modulation()` rechnet LDRO aus der Symboldauer
+und kommt bei SF7/BW500 auf 0. Damit rastet der Header ein, `HeaderValid`
+feuert — und *jede* Nutzlast kommt mit CRC-Fehler an. Das ist die böseste Falle
+der Strecke, weil sie wie „fast richtig" aussieht:
+
+```
+ldro0 cr1 CRCFEHL len22 b'-\xa7\x15\xfcQ\xc43\x9b1j\xa4r\xe8D\xfd...'
+ldro1 cr1 CRC-OK  len23 b',\x17\xc0a\x00\xff\xff\x0fW+"?,B[Q]2#""#\x18'
+```
+
+**2. Die Luftraten-Etiketten sind nominal.** Index 5 heißt „19.2k". Die gängige
+Ebyte-Tabelle übersetzt das zu SF7/BW125 — gemessen ist es SF7/BW500. Nicht auf
+die Tabelle verlassen, messen.
+
+**3. `sock_mode` 2 ist der TCP-Server, nicht 0.** Die Modus-Tabelle in
+`python/ebyte_e90_api.py` führt `0` als „TCP Server" und `2` als „TCP Client".
+Nachgemessen lauscht das Gerät mit `0` auf **keinem** Port; mit `2` ist 8886
+offen. Ein Test gegen ein nicht lauschendes Gerät sieht aus wie ein
+Funkproblem und ist keines.
+
+**4. `wlspower` 0 ist die höchste Stufe**, 3 die niedrigste. Werkseinstellung
+war 3 — also die schwächste.
+
+**5. Bildkalibrierung ist bandgebunden.** `set_frequency()` schrieb fest
+`0xD7,0xDB` (863–870 MHz). Für 430–440 MHz will der SX1262 `0x6B,0x6F`
+(Datenblatt Tab. 9-2). In `lora_p2p.py` wählt `kalibrierband()` das jetzt nach
+Frequenz; für die 868er Strecke ändert sich dadurch nichts.
+
+**6. `GetRssiInst` beginnt bei Index 0.** Byte 1 liefert konstant `0xFF`, also
+scheinbar −127.5 dBm — kein Messwert, sondern ein Lesefehler. Gleiche
+Indizierung wie bei `GetRxBufferStatus`, siehe [README.md](README.md).
+
+**7. LBT kann das Senden aufhalten.** Im belegten 433er Band hält Listen Before
+Talk das Modul zurück. Für die Messungen abgeschaltet.
+
+## Benutzung
+
+Auf dem Pico:
+
+```python
+import ebyte433
+ebyte433.hoeren()                   # mitlesen, was das E90 funkt
+ebyte433.senden("hallo")            # erscheint am E90 auf TCP 8886
+ebyte433.rahmen(b"x")               # Frame bauen
+ebyte433.entpacken(roh)             # Klartext aus einem Frame
+```
+
+Vom Rechner aus:
+
+```sh
+mpremote connect /dev/ttyACM0 cp ebyte433.py :
+mpremote connect /dev/ttyACM0 exec "import ebyte433; ebyte433.hoeren()"
+```
+
+Gegenprobe am E90 — der Sockel ist ein roher Datenschlauch in beide Richtungen:
+
+```sh
+python3 -c "
+import socket
+s = socket.create_connection(('192.168.4.101', 8886))
+s.send(b'vom E90 auf die Luft\n')   # -> kommt am Pico an
+print(s.recv(4096))                  # <- was der Pico gefunkt hat
+"
+```
+
+## Verifiziert
+
+```
+E90 → Pico:  RSSI −78 dBm  SNR 15.0 dB  CRC ok  b'E90->PICO 014\n'
+Pico → E90:  EMPFANGEN b'Pico Nachricht 4\xae'
+```
+
+## Dateien
+
+| Pfad | Inhalt |
+|---|---|
+| `devices/pico_sx1262/ebyte433.py` | Gegenstelle auf dem Pico, inkl. Rahmen-Codec |
+| `devices/pico_sx1262/lora_p2p.py` | SX1262-Treiber; `kalibrierband()` neu |
+| `python/e90_pico_setup.py` | stellt das E90 auf diesen Kanal (nicht in diesem Repo) |
+| `python/e90_restore.py` | schreibt ein Backup zurück (nicht in diesem Repo) |
+| `python/e90_backup/*.json` | Auslieferungszustand und funktionierender Stand |
+
+## Offen
+
+* **Antennenanpassung.** Das Board ist auf 868 MHz gebaut. Eine 433-MHz-Antenne
+  am Pico würde den größten Teil der Fehlanpassung beheben; ohne sie ist die
+  Strecke auf Sichtweite beschränkt.
+* **Sendeleistung und LBT.** Für die Messungen steht das E90 auf 30 dBm mit
+  abgeschaltetem LBT. Im 433er ISM-Band gelten 10 mW ERP — für Dauerbetrieb
+  zurückdrehen (`wlspower`, `wlslbtenable` in `e90_pico_setup.py`).
+* **Die Kopfbytes 2 und 3** sind als Prüfsumme verstanden und reproduzierbar,
+  ihre Herkunft im Ebyte-Protokoll aber nicht belegt. Für den Betrieb reicht
+  die Regel; für ein zweites Modul ist sie ungeprüft.
+
+---
+
+# E90-DTU(900SL22) über RS-232
+
+Das zweite Gerät. Es liegt mit 850.125–930.125 MHz **im gut angepassten Bereich
+des Waveshare-Boards** und ist damit die interessantere Gegenstelle: gemessener
+Rauschflur des Pico bei 868 MHz −102 dBm gegenüber −118 dBm auf 433 MHz.
+
+## Betriebsart über DIP
+
+Aus dem E90-DTU-SL-Handbuch, wörtlich bestätigt durch „M0 = ON，M1 = OFF,
+device works in Mode 2":
+
+| Modus | | M1 | M0 | |
+|---|---|---|---|---|
+| Mode 0 | Normal | ON | ON | UART + RF, transparent, Konfiguration über Luft möglich |
+| Mode 1 | WOR | ON | OFF | |
+| Mode 2 | **Konfiguration** | OFF | ON | Register über die serielle Schnittstelle |
+| Mode 3 | Sleep | OFF | OFF | |
+
+In **Mode 2 ist der Funk komplett aus** („Wireless transmission is off.
+Wireless receiving is off."). Wer dort auf Empfang wartet, wartet vergebens —
+das ist kein Fehler, sondern die Betriebsart.
+
+Register lesen antwortet auch in **Mode 3** (Sleep), nicht nur in Mode 2.
+
+## Anschluss
+
+Die DB-9-Buchse ist laut Handbuch eine **Standard-RS-232-Schnittstelle**
+(±12 V, invertierte Logik), die 3.81-Klemmleiste ist RS-485 plus Versorgung.
+Ein USB↔**TTL**-Kabel kann an der DB-9 grundsätzlich nicht arbeiten — es
+braucht einen echten USB↔RS-232-Wandler.
+
+LEDs als Diagnose: **RXD-LED blinkt beim Empfangen, TXD-LED beim Senden**.
+Blinken beide, während man Anfragen schickt, ist die Leitung in beiden
+Richtungen elektrisch in Ordnung, und ein ausbleibendes Ergebnis liegt am
+Protokoll — nicht am Kabel.
+
+## Konfigurationsprotokoll: E32-Stil, nicht E22
+
+Das Gerät antwortet **nicht** auf AT-Kommandos und nicht auf das
+E22-Registerprotokoll. Es spricht den älteren 6-Byte-Rahmen:
+
+```
+C0 ADDH ADDL SPED CHAN OPTION     C0 = dauerhaft speichern
+C1 C1 C1                          alles lesen
+C2 ADDH ADDL SPED CHAN OPTION     nur bis zum Stromausfall
+```
+
+Auffällig: **jede** `C1 xx xx`-Anfrage liefert dieselbe Antwort, das Gerät liest
+sie durchweg als „alle Parameter lesen". Wer wie beim E22 adressweise zu lesen
+versucht, hält die immer gleiche Antwort für einen Fehler.
+
+Ausgelesener Werkszustand:
+
+```
+c0 00 00 1a 06 44
+      │  │  │  └── OPTION 0x44: transparent, FEC an, maximale Leistung
+      │  │  └───── CHAN 0x06
+      │  └──────── SPED 0x1A: 8N1, 9600 Bd UART, Luftrate 2.4k
+      └─────────── Adresse 0x0000
+```
+
+Baudrate und Parität decken sich mit den dokumentierten Werkswerten, was die
+Dekodierung bestätigt.
+
+**Erstes Kommando nach dem Öffnen geht verloren.** Die Leitung muss sich erst
+setzen; wer einmal sendet und nichts hört, schließt zu früh auf einen Defekt.
+Zweimal senden und die zweite Antwort werten.
+
+## Frequenz: Kanal 6 heißt 868.125 MHz
+
+Die Basisfrequenz ist **862.125 MHz**, nicht die aus dem Datenblattbereich
+naheliegenden 850.125 MHz:
+
+```
+862.125 MHz + 6 × 1 MHz = 868.125 MHz
+```
+
+Gemessen per RSSI-Sweep des Pico über 850–876 MHz in 1-MHz-Schritten, während
+Daten in den UART liefen:
+
+```
+866 MHz  −86 dBm      868 MHz  −32 dBm   ← Träger
+867 MHz  −86 dBm      869 MHz  −73 dBm
+                      870 MHz  −87 dBm
+```
+
+Kontrollmessung mit abgeschaltetem Sender: Maximum −86 dBm, 2 Präambeln in
+30 s — gegenüber −32 dBm und 64 Präambeln in 2,5 s mit Sender. Der Träger
+gehört also eindeutig zum DTU. **Diese Gegenprobe ist Pflicht**, sonst hält man
+Fremdverkehr für das eigene Gerät; in diesem Repo ist genau das beim 433er
+zunächst passiert.
+
+## Was noch nicht stimmt
+
+**Der DTU legt die UART-Daten nicht auf die Luft**, obwohl er in Mode 0 steht.
+Belegt durch einen Skalierungstest: bei 13 Byte Nutzlast dauern die Bursts
+3–7 ms, bei **200 Byte unverändert 3–4 ms**. Wären es die eigenen Daten, müsste
+die Dauer um das Fünfzehnfache wachsen. Für SF7/BW125 wären bei 13 Byte ohnehin
+~46 ms zu erwarten.
+
+Die Bursts treten nur auf, wenn am UART Daten anliegen — sie hängen also mit
+der Eingabe zusammen, transportieren sie aber nicht. Offene Spuren:
+
+* Luftrate 2.4k entspricht bei E32-Modulen **SF10**/BW125, nicht SF7. Die
+  Präambeltreffer lagen aber bei SF7/BW125 — das passt nicht zusammen.
+* Das Syncword ist unbekannt (siehe oben), deshalb konnte bisher kein einziges
+  Paket dekodiert und damit auch nichts gegengeprüft werden.
+* Ob die RS-232-Gegenstelle in Mode 0 dieselbe Baudrate fährt wie in Mode 2,
+  ist nicht verifiziert.
+
+Nächster Schritt wäre der direkte Registerscan `wrreg(0x0740, [a, b])` statt
+`set_syncword()`, weil letzteres nur ein Raster von 256 aus 65536 Kombinationen
+trifft.

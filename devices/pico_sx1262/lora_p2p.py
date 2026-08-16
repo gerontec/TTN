@@ -68,6 +68,33 @@ IRQ_TIMEOUT, IRQ_CRC_ERR = 0x0200, 0x0040
 REG_SYNCWORD = 0x0740
 XTAL = 32000000
 
+# Bildkalibrierung, SX1262-Datenblatt Tabelle 9-2: (untere MHz, obere MHz, f1, f2)
+KALIBRIERBAENDER = (
+    (430, 440, 0x6B, 0x6F),
+    (470, 510, 0x75, 0x81),
+    (779, 787, 0xC1, 0xC5),
+    (863, 870, 0xD7, 0xDB),
+    (902, 928, 0xE1, 0xE9),
+)
+
+
+def kalibrierband(hz):
+    """Die beiden CalibrateImage-Bytes fuer diese Frequenz.
+
+    Die Tabelle deckt nur die im Datenblatt genannten Baender ab und laesst
+    Luecken (z.B. 856 MHz). Dahinter steht aber eine schlichte Regel: die Bytes
+    sind die Bandgrenzen in Schritten von 4 MHz. Gegenprobe an der Tabelle:
+    0xD7 = 215 -> 860 MHz, 0xDB = 219 -> 876 MHz, also das 863-870-Band.
+    Ausserhalb der Tabelle wird deshalb gerechnet statt abgebrochen.
+    """
+    mhz = hz / 1000000.0
+    for unten, oben, f1, f2 in KALIBRIERBAENDER:
+        if unten <= mhz <= oben:
+            return f1, f2
+    f1 = int(mhz / 4)
+    f2 = -(-int(mhz) // 4) + 1
+    return f1 & 0xFF, f2 & 0xFF
+
 BW_TABLE = {7800: 0x00, 10400: 0x08, 15600: 0x01, 20800: 0x09, 31250: 0x02,
             41700: 0x0A, 62500: 0x03, 125000: 0x04, 250000: 0x05, 500000: 0x06}
 
@@ -136,8 +163,10 @@ class SX1262:
         self.cmd([SET_BUFFER_BASE, 0x00, 0x00])
 
     def set_frequency(self, hz):
-        # Bildkalibrierung fuer das 863-870-Band vor dem Frequenzwechsel
-        self.cmd([CALIBRATE_IMAGE, 0xD7, 0xDB])
+        # Bildkalibrierung passend zum Band vor dem Frequenzwechsel. Die
+        # Konstanten sind bandgebunden (SX1262-Datenblatt Tab. 9-2); mit den
+        # 868er-Werten auf 433 MHz bleibt die Bildunterdrueckung unkalibriert.
+        self.cmd([CALIBRATE_IMAGE] + list(kalibrierband(hz)))
         pll = (hz << 25) // XTAL
         self.cmd([SET_RF_FREQUENCY, (pll >> 24) & 0xFF, (pll >> 16) & 0xFF,
                   (pll >> 8) & 0xFF, pll & 0xFF])

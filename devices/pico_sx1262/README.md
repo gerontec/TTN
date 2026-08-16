@@ -3,6 +3,10 @@
 Rohes LoRa auf dem Rohkanal des DLOS8N. Gegenstelle ist `dell/lora_raw.py`,
 Kanalaufbau steht in [gateway/RAWKANAL.md](../../gateway/RAWKANAL.md).
 
+Derselbe Pico spricht daneben mit zwei Ebyte-E90-DTU-Funkmodems — Funkparameter,
+Rahmenformat und die ab Werk festgelegten **Syncwords** stehen in
+[EBYTE_E90.md](EBYTE_E90.md).
+
 | | |
 |---|---|
 | Board | Raspberry Pi Pico (RP2040), MicroPython **1.28.0** (20260406) |
