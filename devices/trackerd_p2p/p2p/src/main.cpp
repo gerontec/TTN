@@ -19,7 +19,7 @@
 #include <math.h>
 #include <Wire.h>
 
-#define FW_VERSION "TrackerD-P2P v3.2"
+#define FW_VERSION "TrackerD-P2P v3.3"
 
 /* Pinbelegung laut Dragino-Pinmapping (README des TrackerD-Repos) */
 #define PIN_SCK    5
@@ -169,6 +169,7 @@ static bool   gpsFix     = false;
 static double gpsLat = 0, gpsLon = 0;      /* letzte gueltige Position */
 static bool   gpsGesendet = false;         /* schon einmal gesendet? */
 static double gpsSendLat = 0, gpsSendLon = 0;  /* zuletzt gesendete Position */
+static uint32_t nmeaZeilen = 0, rmcZeilen = 0;
 static char   nmea[100];
 static int    nmeaLen = 0;
 
@@ -211,8 +212,9 @@ static void printCfg()
     Serial.printf("IH=%d PLEN=%d\r\n", cfgImplicit ? 1 : 0, cfgImplicitLen);
     Serial.printf("RX=%d\r\n",      rxEnabled ? 1 : 0);
     Serial.printf("LDRO=%s\r\n",    cfgLdro < 0 ? "auto" : (cfgLdro ? "1" : "0"));
-    Serial.printf("GPS=%d fix=%d %.6f,%.6f\r\n",
-                  cfgGps ? 1 : 0, gpsFix ? 1 : 0, gpsLat, gpsLon);
+    Serial.printf("GPS=%d fix=%d %.6f,%.6f NMEA=%lu RMC=%lu\r\n",
+                  cfgGps ? 1 : 0, gpsFix ? 1 : 0, gpsLat, gpsLon,
+                  (unsigned long)nmeaZeilen, (unsigned long)rmcZeilen);
     Serial.printf("EBYTE=%d (%s)\r\n", cfgEbyte,
                   cfgEbyte == SENDE_BEIDE ? "roh+Ebyte" :
                   (cfgEbyte == SENDE_EBYTE ? "nur Ebyte" : "nur roh"));
@@ -296,7 +298,9 @@ static double nmeaGrad(const char *feld, char hemi)
 static void nmeaZeile(char *z)
 {
     if (strlen(z) < 20 || z[0] != '$') return;
+    nmeaZeilen++;
     if (strncmp(z + 3, "RMC", 3) != 0) return;
+    rmcZeilen++;
     char *f[8] = {0};
     int n = 0;
     for (char *p = z; *p && n < 8; ) {
@@ -752,14 +756,20 @@ void setup()
     Serial.printf("Pin-Funkdiagnose %lu s, Reihenfolge: ", PINTX_FENSTER / 1000);
     for (int i = 0; i < BTN_ANZAHL; i++) Serial.printf("%d ", btnPins[i]);
     Serial.println();
-    /* GPS einschalten. GPS_RESET nur kurz pulsen und die Leitung danach in
-     * Ruhe lassen -- sie ist am Geraet mehrfach belegt. */
+    /* GPS einschalten, genau wie Draginos GPS_boot():
+     *
+     *     digitalWrite(GPS_POWER, HIGH);
+     *     digitalWrite(GPS_RESET, LOW);
+     *
+     * **GPS_RESET bleibt LOW.** Das ist der Betriebszustand, kein Impuls. Wer
+     * die Leitung nach einem Puls auf HIGH stehen laesst, haelt das Modul
+     * dauerhaft im Reset -- es kommt dann kein einziges NMEA-Zeichen, und die
+     * Firmware wartet ewig auf einen Fix, der nie entsteht. Genau dieser
+     * Fehler steckte in v3.0 bis v3.2. */
     pinMode(GPS_POWER, OUTPUT);
-    digitalWrite(GPS_POWER, HIGH);
     pinMode(GPS_RESET, OUTPUT);
+    digitalWrite(GPS_POWER, HIGH);
     digitalWrite(GPS_RESET, LOW);
-    delay(20);
-    digitalWrite(GPS_RESET, HIGH);
     SerialGPS.begin(9600, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
     Wire.begin();                               /* SDA 21 / SCL 22 */
     {
