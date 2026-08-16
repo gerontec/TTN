@@ -70,18 +70,22 @@ def pruefbyte(nutz):
     return (x ^ 0xA0) & 0xFF
 
 
-def rahmen(nutz):
-    """Ebyte-Frame aus einer Klartext-Nutzlast bauen."""
+def rahmen(nutz, magic=KOPF_MAGIC, adresse=ADRESSE):
+    """Ebyte-Frame aus einer Klartext-Nutzlast bauen.
+
+    magic und adresse sind geraeteabhaengig -- der Rest des Formats ist bei
+    400er und 900er identisch, siehe EBYTE_E90.md.
+    """
     if isinstance(nutz, str):
         nutz = nutz.encode()
     xx = pruefbyte(nutz)
-    kopf = KOPF_MAGIC + bytes([xx, xx ^ 0xA1]) + ADRESSE + bytes([len(nutz)])
+    kopf = magic + bytes([xx, xx ^ 0xA1]) + adresse + bytes([len(nutz)])
     return kopf + bytes(b ^ XOR for b in nutz)
 
 
-def entpacken(roh):
+def entpacken(roh, magic=KOPF_MAGIC):
     """Klartext aus einem empfangenen Frame, oder None wenn es keiner ist."""
-    if len(roh) < 9 or roh[0:2] != KOPF_MAGIC:
+    if len(roh) < 9 or roh[0:2] != magic:
         return None
     laenge = roh[7]
     nutz = bytes(b ^ XOR for b in roh[8:8 + laenge])

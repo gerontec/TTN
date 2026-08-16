@@ -11,7 +11,8 @@ nicht verwechseln darf:
 | Modulation | SF7/BW500, LDRO 1 | **SF11/BW500, LDRO 1** |
 | Konfiguration | HTTP-JSON + UDP-AT | E22-Register über RS-232 |
 | Empfang am Pico | −78 dBm | **−12 dBm** |
-| Stand | beide Richtungen verifiziert | Empfang verifiziert |
+| Modul auf dem Pico | `ebyte433.py` | `ebyte868.py` |
+| Stand | beide Richtungen verifiziert | **beide Richtungen verifiziert** |
 
 Der 900er ist die interessantere Gegenstelle: er sitzt mit 868.125 MHz genau
 dort, wo das Waveshare-Board angepasst ist. Der Unterschied ist drastisch —
@@ -413,8 +414,26 @@ Verifiziert, acht von acht Paketen:
 
 ```
 RSSI −12 SNR 7.8 CRC ok  Kopf 2c 12 de 7f 00 00 00 0d  b'E90UART 0587\n'
-RSSI −12 SNR 7.8 CRC ok  Kopf 2c 12 d1 70 00 00 00 0d  b'E90UART 0588\n'
+RSSI −12 SNR 7.8 CRC ok  Kopf 2c 12 d1 70 00 00 00 0d  b'E90UART 0589\n'
 ```
+
+Und die Gegenrichtung, sechs von sechs — der Pico baut den Rahmen mit
+`ebyte868.rahmen()`, das DTU gibt die Nutzlast seriell aus:
+
+```
+b'PICO an DTU 0\xec PICO an DTU 1\xea PICO an DTU 2\xeb
+  PICO an DTU 3\xea PICO an DTU 4\xea PICO an DTU 5\xed'
+```
+
+Das angehängte Byte ist der RSSI (REG3 Bit 7), `0xEC` also −118 dBm.
+
+**Diese Zahl passt nicht zum Rest.** Der Pico hört das DTU mit −12 dBm, das
+DTU den Pico mit −118 dBm — 106 dB Unterschied, obwohl zwischen 33 dBm und
+14 dBm Sendeleistung nur 19 dB liegen. Empfangen wird trotzdem lückenlos, was
+bei SF11/BW500 (Empfindlichkeit um −125 dBm) auch bei −118 dBm plausibel ist.
+Ob der angehängte Wert wirklich der Paket-RSSI ist oder das Umgebungsrauschen
+(beide RSSI-Bits sind gesetzt), ist nicht geklärt — die Zahl sollte man
+deshalb nicht als Pegelmessung verwenden.
 
 ## RSSI im laufenden Betrieb abfragen
 
@@ -434,6 +453,66 @@ dBm = −RSSI / 2
 `python/e90ser.py --rssi` macht genau das. Der Wert ist eine vom Pico
 unabhängige zweite Messquelle und beantwortet die Frage, ob das Gerät im
 Sendebetrieb überhaupt noch auf den UART hört.
+
+## Repeater-Betrieb
+
+`REG3` Bit 5 schaltet den Repeater, Bit 6 den Fixpunkt-Modus. **Beide gehören
+zusammen**, das Handbuch ist da deutlich:
+
+> „After the repeater function is enabled, if the **target address is not the
+> module itself**, the module will forward it once. In order to prevent data
+> return-back, it is recommended to use it in conjunction with the fixed point
+> mode. That is: the target address is different from the source address."
+
+Ebyte filtert also **nicht nach Absender**, sondern nach **Zieladresse** — eine
+Absenderkennung gibt es im Rahmen gar nicht. Die Echo-Vermeidung entsteht erst
+dadurch, dass im Fixpunkt-Modus Quelle und Ziel verschieden sind. Repeater
+allein, ohne Fixpunkt, würde zurückkoppeln.
+
+```
+REG3 0x83 -> 0xE3     Bit 7 RSSI-Byte | Bit 6 Fixpunkt | Bit 5 Repeater
+C0 06 01 E3           dauerhaft (C2 waere nur bis zum Stromausfall)
+```
+
+**Zwei Konsequenzen, die man einplanen muss:**
+
+* Die Adresse des Repeaters entscheidet, was er weiterleitet. Steht sie auf
+  `0x0000` und ist der Verkehr ebenfalls an `0x0000` gerichtet, gilt er als
+  „an mich selbst" und wird **nicht** weitergeleitet. Die Endpunkte brauchen
+  also einen Adressplan, in dem das Ziel nicht die Repeater-Adresse ist.
+* Im Fixpunkt-Modus liest das Gerät die **ersten drei Bytes der seriellen
+  Daten als Ziel** (Adresse hoch, Adresse niedrig, Kanal). Wer den DTU vorher
+  transparent benutzt hat, muss seine Sendedaten umstellen.
+
+Gesetzt wird das im Konfigurationsmodus; laut Handbuch beginnt der Repeater zu
+arbeiten, sobald danach wieder auf Mode 0 zurückgeschaltet wird.
+
+## Funkkonfiguration `CF CF` — geht so nicht
+
+Das Handbuch nennt eine Fernkonfiguration:
+
+```
+Command: CF CF + general command      Format error -> FF FF FF
+Reply:   CF CF + general response
+```
+
+**Vom Pico aus funktioniert das nicht.** Ein Rahmen mit der Nutzlast
+`cf cf c1 06 01` kommt am DTU an und wird dort unverändert auf die serielle
+Seite ausgegeben — als Daten, nicht als Kommando:
+
+```
+seriell heraus: cf cf c1 06 01 ea       (ea = RSSI-Byte)
+```
+
+Der Grund steht über der Kommandotabelle: „**In configuration mode (mode 2:
+M1=OFF, M0=ON), supported commands are as follows**" — die ganze Liste,
+einschließlich der Funkkonfiguration, steht unter dieser Voraussetzung. Das
+`CF CF` wird also am **UART des sendenden Moduls** ausgewertet, das daraufhin
+ein besonders markiertes Funkpaket erzeugt. Ein selbst gebauter Rahmen trägt
+diese Markierung nicht.
+
+Nicht geklärt ist, worin die Markierung besteht. Das zweite Kopfbyte ist ein
+Kandidat (`0x17` beim 400er, `0x12` beim 900er), aber unbelegt.
 
 ## Fallen auf der seriellen Seite
 
