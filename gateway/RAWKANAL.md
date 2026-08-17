@@ -240,6 +240,26 @@ AT+SEND=hallo
   `868.125 MHz SF7BW125 ch8 RSSI -77 SNR 9.2 CRC ok 16B 545241…` mit
   Klartext `"TRACKERD-TEST 42"`, und auf `lora/raw` veröffentlicht.
 
+### Ergänzung 17.08.2026 — CRC-Fehler sichtbar machen
+
+`uci set gateway.server3.forward_crc_error=1`
+
+Der Forwarder leitete nur `forward_crc_valid` weiter. Verfälschte Pakete waren
+damit unsichtbar — und genau die sind bei einer wackeligen Strecke die
+wertvollste Information, denn ein Paket mit CRC-Fehler **beweist, dass das
+Signal ankam**. Ohne sie lässt sich „zu schwach" nicht von „gar nicht da"
+unterscheiden.
+
+Gilt nur für `server3` (raw-dell, Port 1702); die LoRaWAN-Server bleiben
+unberührt. `generate-config.sh` liest die drei `forward_crc_*`-Flags für
+server3 aus UCI, die Einstellung übersteht also die Regeneration von
+`local_conf.json`. Bei server2 sind sie dagegen fest verdrahtet.
+
+`dell/lora_raw.py` veröffentlicht den CRC-Status ohnehin schon als Feld `crc`,
+dort war nichts zu ändern. Zu beachten: Bei einem verfälschten Paket ist der
+Inhalt Müll, `absender` und `text` sind dann wertlos — aussagekräftig bleiben
+`rssi` und `foff`.
+
 ### Ergänzung 17.08.2026 — eigenes Syncword auf dem Rohkanal
 
 - **Rohkanal mit eigenem Syncword**: `chan_Lora_std` auf **0x55**, die 8
