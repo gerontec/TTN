@@ -149,18 +149,22 @@ live sweep of `peak2` gave packets only at `peak2 = 10`, i.e. **0x55**.
 Frequency for the 900 MHz series is `850.125 MHz + channel × 1 MHz`; the
 factory default channel 18 lands exactly on 868.125 MHz.
 
-The module wraps the payload even in transparent mode:
+The module wraps the payload even in transparent mode. Note that bytes 2–3
+are a **checksum over the payload, not a counter** — the same payload produces
+a byte-identical frame — and that the whitening key is a constant 0x12, not the
+channel number (the 868 device's channel just happens to be 18 = 0x12; the 433
+device uses channel 23 and still whitens with 0x12). Bytes 5–6 carry the
+sending module's **own** address, which is what makes self-filtering possible:
 
 ```
 2C 12 87 26 00 FF FF 07 | 42 40 5D 56 3F 22 21
-   ^^                             XOR 0x12          -> "PROD-03"
-   channel 18 = also the XOR key
+                                   XOR 0x12         -> "PROD-03"
 
 byte 0    0x2C   magic
-byte 1    channel, and the whitening key
-byte 2-3  sequence counter
+byte 1    channel number
+byte 2-3  xx, xx ^ 0xA1  where xx = (XOR over all payload bytes) ^ 0xA0
 byte 4    NETID
-byte 5-6  source address (FF FF = broadcast)
+byte 5-6  source address of the sending module
 byte 7    payload length
 ```
 

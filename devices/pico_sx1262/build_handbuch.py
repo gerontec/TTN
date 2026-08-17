@@ -395,15 +395,20 @@ sx1302_poke 0x5B22   -> 0x98    Bits 4-5 = 1, LDRO aktiv</pre>
 acht Byte lang, und die Nutzlast ist mit der <b>Kanalnummer</b> XOR-verweißt —
 dieselbe Zahl steht in Byte 1:</p>
 <pre>2C 12 87 26 00 FF FF 07 | 42 40 5D 56 3F 22 21
-   ^^                                XOR 0x12
-   Kanal 18 = zugleich der Schlüssel        -&gt; "PROD-03"
+                                  XOR 0x12   -&gt; "PROD-03"
 
 Byte 0    0x2C   Kennung
-Byte 1    Kanal  zugleich XOR-Schlüssel
-Byte 2-3         laufende Nummer
+Byte 1    Kanalnummer
+Byte 2-3  xx, xx ^ 0xA1   mit xx = (XOR über alle Nutzlastbytes) ^ 0xA0
 Byte 4    NETID
-Byte 5-6  Adresse des Absenders (FF FF = Broadcast)
+Byte 5-6  **eigene** Adresse des sendenden Moduls
 Byte 7    Länge der Nutzlast</pre>
+<div class="merk">Byte 2–3 sind eine <b>Prüfsumme, kein Zähler</b> — gleiche
+Nutzlast ergibt einen Byte für Byte identischen Rahmen. Und der XOR-Schlüssel
+ist konstant <code>0x12</code>, nicht die Kanalnummer; beim 868er fällt beides
+zufällig zusammen (Kanal 18 = 0x12), der 433er sendet auf Kanal 23 und weißt
+trotzdem mit 0x12. Byte 5–6 tragen die <b>eigene</b> Adresse des Senders —
+darauf beruht die Selbsterkennung.</div>
 
 <h3>8.9 Was der Eingriff nicht anfasst</h3>
 <p>Nachgemessen mit einem LA66-USB (EU868 v1.3, bereits gejoint): Uplink auf

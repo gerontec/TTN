@@ -42,6 +42,16 @@ MQTT_TOPIC = "lora/raw"
 ID_LEN = 4
 HEXZIFFERN = set("0123456789ABCDEF")
 
+# Ebyte-Rahmen (E22/E90), siehe devices/pico_sx1262/EBYTE_E90.md:
+#   2 Byte Kennung (0x2C, Kanal) | Pruefbyte xx, xx^0xA1 | NETID |
+#   2 Byte Absenderadresse | Laenge | Nutzlast, XOR 0x12
+# Das Modul traegt seine *eigene* Adresse ein -- genau das, was zum
+# Selbsterkennen noetig ist. Das Pruefbytepaar ist eine XOR-Summe ueber die
+# Nutzlast, kein Zaehler: gleiche Nutzlast ergibt Byte fuer Byte denselben
+# Rahmen.
+EBYTE_MAGIC = 0x2C
+EBYTE_KOPF = 8
+
 
 def eigene_kennung():
     """Letzte vier Hexstellen der MAC. Ohne Vergabeliste eindeutig und von
@@ -56,6 +66,18 @@ def eigene_kennung():
         if len(mac) == 12 and mac != "0" * 12 and set(mac) <= HEXZIFFERN:
             return mac[-ID_LEN:]
     return "0000"
+
+
+def ebyte_absender(roh):
+    """Absenderadresse als vier Hexstellen, oder None wenn kein Ebyte-Rahmen.
+
+    Kennung in Byte 0 und Laengenangabe in Byte 7 zusammen sind ein
+    belastbares Merkmal, das Textpakete nicht zufaellig erfuellen.
+    """
+    if (len(roh) > EBYTE_KOPF and roh[0] == EBYTE_MAGIC
+            and roh[EBYTE_KOPF - 1] == len(roh) - EBYTE_KOPF):
+        return "%02X%02X" % (roh[5], roh[6])
+    return None
 
 
 def zerlege(roh):
@@ -122,6 +144,19 @@ def handle_rxpk(pkt, args, mq):
 
     stat = {1: "ok", -1: "CRC-Fehler", 0: "ohne CRC"}.get(pkt.get("stat"), "?")
     sprung, absender, nutz = zerlege(raw)
+
+    # Selbstfilter. Jedes Geraet muss die eigenen Pakete erkennen: was ueber
+    # ein Relais zurueckkommt, ist kein neuer Verkehr. Beide Formate tragen
+    # die Absenderkennung mit -- Text als vier Hexstellen vor dem ">", Ebyte
+    # als Adresse in Byte 5-6. Ohne diesen Filter wuerde jede Bruecke von
+    # MQTT zurueck auf den Steuereingang eine Endlosschleife erzeugen.
+    quelle = ebyte_absender(raw) or absender
+    if args.self_filter and quelle and quelle.upper() == args.id.upper():
+        log.info("%.3f MHz  %-9s RSSI %-5s eigenes Echo von %s%s, %d B "
+                 "-- gefiltert (Relais bestaetigt)",
+                 freq, pkt.get("datr", "?"), pkt.get("rssi", "?"), quelle,
+                 "/%d" % sprung if sprung else "", len(nutz))
+        return
     txt = printable(nutz)
     herkunft = "%s%s" % (absender or "----",
                          "/%d" % sprung if sprung else "   ")
@@ -152,6 +187,10 @@ def main():
     ap.add_argument("--id", default=None,
                     help="eigene Absenderkennung; Vorgabe sind die letzten "
                          "vier Hexstellen der MAC")
+    ap.add_argument("--no-self-filter", dest="self_filter",
+                    action="store_false",
+                    help="eigene Pakete NICHT herausfiltern; nur zum Messen, "
+                         "im Regelbetrieb droht sonst eine Rueckkopplung")
     ap.add_argument("--ctrl-port", type=int, default=1703,
                     help="lokaler Steuereingang; was hier ankommt, wird gefunkt")
     ap.add_argument("--datr", default="SF7BW125")
@@ -186,7 +225,8 @@ def main():
     ctrl.bind(("127.0.0.1", args.ctrl_port))
     log.info("Steuereingang auf 127.0.0.1:%d", args.ctrl_port)
 
-    log.info("eigene Kennung %s (aus der MAC)", args.id)
+    log.info("eigene Kennung %s (aus der MAC), Selbstfilter %s",
+             args.id, "an" if args.self_filter else "AUS")
 
     def mit_kennung(roh):
         """Befehle und Antworten tragen ihr eigenes Praefix, alles andere

@@ -250,8 +250,11 @@ AT+SEND=hallo
 - **Ebyte E22 empfangen**: E22-900T (USB, Werkskonfig 2.4k = SF11/BW500,
   Kanal 18 = 868.125 MHz) am Regeldienst empfangen — `chan 8`, `SF11BW500`,
   RSSI −63 dBm, `stat:1`. Nutzlast nach XOR 0x12 exakt `PROD-03`.
-  Rahmenformat: `2C 12 <2B lfd> 00 FF FF <len> | Nutzlast XOR 0x12`, wobei
-  Byte 1 die Kanalnummer *und* zugleich der XOR-Schlüssel ist.
+  Rahmenformat: `2C <kanal> <xx> <xx^0xA1> <netid> <2B Absenderadresse>
+  <len> | Nutzlast XOR 0x12`. Byte 2–3 sind eine Prüfsumme über die Nutzlast,
+  **kein Zähler** — gleiche Nutzlast ergibt denselben Rahmen. Der
+  XOR-Schlüssel ist konstant 0x12, nicht die Kanalnummer. Byte 5–6 tragen die
+  **eigene** Adresse des sendenden Moduls, womit Selbsterkennung möglich ist.
 - **LDRO muss erzwungen werden**: der HAL leitet es aus
   `SET_PPM_ON(bw, dr)` ab, das bei **BW500 nie** greift; Ebyte sendet aber mit
   LDRO 1. Ohne Override rastet der Header ein und jede Nutzlast käme mit

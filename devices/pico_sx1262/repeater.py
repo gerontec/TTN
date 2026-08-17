@@ -68,8 +68,10 @@ MAX_HOPS = 3                    # danach wird nicht mehr weitergegeben
 
 # --- Ebyte-Rahmen ---------------------------------------------------------
 # Ein E22/E90 verpackt selbst und laesst sich das nicht abgewoehnen:
-#   0x2C | Kanal | 2 Byte laufende Nummer | NETID | 2 Byte Adresse | Laenge
-# dann die Nutzlast, XOR-verweisst mit der Kanalnummer (die in Byte 1 steht).
+#   0x2C | Kanal | xx | xx^0xA1 | NETID | 2 Byte Absenderadresse | Laenge
+# dann die Nutzlast, XOR-verweisst mit dem konstanten 0x12. xx ist eine
+# XOR-Pruefsumme ueber die Nutzlast, kein Zaehler -- gleiche Nutzlast ergibt
+# Byte fuer Byte denselben Rahmen.
 #
 # Ein solcher Rahmen darf **nicht** mit "Rn<kennung>>" versehen werden: der
 # Empfaenger liest die ersten acht Byte als Kopf, findet statt 0x2C ein 0x52
@@ -78,6 +80,22 @@ MAX_HOPS = 3                    # danach wird nicht mehr weitergegeben
 # einen Sprungzaehler gibt es in diesem Format nicht, MAX_HOPS greift nicht.
 EBYTE_MAGIC = 0x2C
 EBYTE_KOPF  = 8
+
+
+def eigenes_paket(roh, absender, eigene_id):
+    """Stammt das Paket von uns selbst?
+
+    Jedes Geraet muss die eigenen Pakete erkennen koennen. Beide Formate
+    tragen die Absenderkennung mit: Text als vier Hexstellen vor dem ">",
+    Ebyte als Adresse in Byte 5-6 (das Modul traegt dort seine *eigene*
+    Kennung ein). Der Dublettenspeicher allein genuegt nicht -- er vergisst
+    nach Ablauf der Sperre, und weil das Pruefbytepaar aus der Nutzlast
+    berechnet wird statt hochzuzaehlen, sind zwei echte Aussendungen mit
+    gleichem Inhalt ohnehin nicht zu unterscheiden.
+    """
+    if ist_ebyte(roh):
+        return "%02X%02X" % (roh[5], roh[6]) == eigene_id.upper()
+    return absender is not None and absender.decode().upper() == eigene_id.upper()
 
 
 def ist_ebyte(roh):
@@ -263,6 +281,12 @@ def run(telemetrie=None, verbose=True, dauer_s=0):
                     print("  verworfen: %d Spruenge erreicht, von %s"
                           % (n, absender or b"?"))
                 continue
+
+        if eigenes_paket(roh, absender, konf["id"]):
+            unterdrueckt += 1
+            if verbose:
+                print("  verworfen: eigenes Paket zurueck vom Relais")
+            continue
 
         # Schluessel aus Absender und Nutzlast, also ohne Sprungzaehler:
         # derselbe Inhalt geht nicht zweimal hinaus, ueber welchen Umweg auch.
