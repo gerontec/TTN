@@ -248,6 +248,48 @@ class TestSelbstfilter(unittest.TestCase):
         self.assertEqual(self._einmal(b"R1e09c>meins"), [])
 
 
+class TestBroadcastUndSendespeicher(unittest.TestCase):
+    """Als Broadcast senden, damit kein Empfaenger filtert -- und die eigenen
+    Aussendungen trotzdem wiedererkennen."""
+
+    def test_broadcastadresse_landet_im_rahmen(self):
+        f = lr.ebyte_rahmen(b"x", lr.EBYTE_BROADCAST)
+        self.assertEqual(lr.ebyte_absender(f), "FFFF")
+
+    def test_speicher_erkennt_eigenen_rahmen(self):
+        g = lr.Gesendet()
+        f = lr.ebyte_rahmen(b"meins", "FFFF")
+        g.merken(f)
+        self.assertTrue(g.war_das_ich(f))
+
+    def test_speicher_verwechselt_nicht(self):
+        g = lr.Gesendet()
+        g.merken(lr.ebyte_rahmen(b"meins", "FFFF"))
+        self.assertFalse(g.war_das_ich(lr.ebyte_rahmen(b"fremd", "FFFF")))
+
+    def test_speicher_vergisst(self):
+        g = lr.Gesendet(sperre_s=-1)
+        f = lr.ebyte_rahmen(b"alt", "FFFF")
+        g.merken(f)
+        self.assertFalse(g.war_das_ich(f))
+
+    def test_broadcast_echo_wird_gefiltert(self):
+        """Der Fall, um den es geht: gesendet als FFFF, kommt als FFFF zurueck
+        und ist trotzdem als eigenes erkennbar."""
+        g = lr.Gesendet()
+        f = lr.ebyte_rahmen(b"echo", "FFFF")
+        g.merken(f)
+        mq = _FakeMq()
+        lr.handle_rxpk(_rxpk(f), _args(), mq, g)
+        self.assertEqual(mq.gesendet, [])
+
+    def test_fremdes_broadcast_geht_durch(self):
+        g = lr.Gesendet()
+        mq = _FakeMq()
+        lr.handle_rxpk(_rxpk(E22_E90X0), _args(), mq, g)
+        self.assertEqual(len(mq.gesendet), 1)
+
+
 class TestKanalfilter(unittest.TestCase):
 
     def _einmal(self, roh, freq, **kw):

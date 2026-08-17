@@ -77,6 +77,16 @@ GERAETE = {
 # Quarzversatz der Gegenstelle, ein Ebyte-Modul rund -27 kHz.
 SELBST_FOFF_HZ = 300
 
+# Broadcast. Laut Handbuch 7.1.x traegt ein Broadcast-Paket die Adresse FFFF,
+# und *dann filtert der Empfaenger nicht* -- unabhaengig von seiner eigenen
+# Adresse und sogar bei abweichender NETID ("Network code filtering has lower
+# priority than broadcast addresses"). Wer sicher gehoert werden will, sendet
+# damit. Der Preis: die eigene Kennung steht dann nicht mehr im Rahmen, der
+# Selbstfilter kann sich nicht auf die Adresse stuetzen -- dafuer der
+# Kurzzeitspeicher unten.
+EBYTE_BROADCAST = "FFFF"
+GESENDET_SPERRE_S = 120
+
 
 def geraete_laden():
     try:
@@ -85,6 +95,31 @@ def geraete_laden():
     except (OSError, ValueError):
         pass
     return GERAETE
+
+
+class Gesendet:
+    """Was wir selbst gefunkt haben, kurz gemerkt.
+
+    Der Selbstfilter kann sich nicht mehr auf die Absenderadresse stuetzen,
+    sobald wir als Broadcast senden -- dann steht FFFF im Rahmen wie bei jedem
+    anderen auch. Der Inhalt taugt aber immer: ein Ebyte-Rahmen ist bei
+    gleicher Nutzlast byteweise identisch, weil das Pruefbyte aus der Nutzlast
+    gerechnet wird und nicht hochzaehlt.
+    """
+
+    def __init__(self, sperre_s=GESENDET_SPERRE_S):
+        self.sperre_s = sperre_s
+        self._eintraege = {}
+
+    def merken(self, roh):
+        self._eintraege[bytes(roh)] = time.time()
+
+    def war_das_ich(self, roh):
+        jetzt = time.time()
+        for k, t in list(self._eintraege.items()):
+            if jetzt - t > self.sperre_s:
+                del self._eintraege[k]
+        return bytes(roh) in self._eintraege
 
 
 def geraet_zu(kennung):
@@ -199,7 +234,7 @@ def txpk(text, freq, datr, power):
     }}).encode()
 
 
-def handle_rxpk(pkt, args, mq):
+def handle_rxpk(pkt, args, mq, gesendet=None):
     freq = pkt.get("freq", 0.0)
     is_raw = abs(freq - args.freq) <= FREQ_TOL
     if not is_raw and not args.all:
@@ -230,7 +265,11 @@ def handle_rxpk(pkt, args, mq):
     # die Absenderkennung mit -- Text als vier Hexstellen vor dem ">", Ebyte
     # als Adresse in Byte 5-6. Ohne diesen Filter wuerde jede Bruecke von
     # MQTT zurueck auf den Steuereingang eine Endlosschleife erzeugen.
+    # Eigenes Paket: entweder traegt es unsere Kennung, oder wir haben genau
+    # diesen Rahmen kurz zuvor selbst gefunkt (greift auch bei Broadcast).
     eigen = bool(absender) and absender.upper() == args.id.upper()
+    if gesendet is not None and gesendet.war_das_ich(raw):
+        eigen = True
     foff = pkt.get("foff")
     # Selbstempfang von Weitergabe trennen: gleiche Kennung sagt nur, dass es
     # von uns stammt -- ob es ueber ein Relais kam, verraet erst der Versatz.
@@ -279,6 +318,9 @@ def main():
     ap.add_argument("--id", default=None,
                     help="eigene Absenderkennung; Vorgabe sind die letzten "
                          "vier Hexstellen der MAC")
+    ap.add_argument("--sendeadresse", default=EBYTE_BROADCAST,
+                    help="Adresse im gesendeten Ebyte-Rahmen; FFFF ist "
+                         "Broadcast, dann filtert kein Empfaenger")
     ap.add_argument("--no-ebyte", dest="ebyte", action="store_false",
                     help="ungerahmt senden; ein E22/E90 verwirft das, nur fuer "
                          "Gegenstellen die rohes LoRa lesen")
@@ -330,17 +372,21 @@ def main():
     def mit_kennung(roh):
         """Sendefertig machen.
 
-        Im Ebyte-Modus wird gerahmt -- die Kennung steckt dann in der Adresse
-        des Rahmens, ein Textpraefix waere doppelt gemoppelt. Sonst wie bisher:
-        Befehle und Antworten tragen ihr eigenes Praefix, alles andere bekommt
-        die Absenderkennung vorangestellt.
+        Im Ebyte-Modus wird gerahmt. Die Adresse im Rahmen ist per Vorgabe
+        FFFF, also Broadcast -- laut Handbuch filtert der Empfaenger dann
+        nicht, unabhaengig von seiner eigenen Adresse. Ein Textpraefix waere
+        hier doppelt gemoppelt. Sonst wie bisher: Befehle und Antworten tragen
+        ihr eigenes Praefix, alles andere bekommt die Absenderkennung voran.
         """
         if args.ebyte:
-            return ebyte_rahmen(roh, args.id)
+            roh = ebyte_rahmen(roh, args.sendeadresse)
+            gesendet.merken(roh)
+            return roh
         if roh[:2] in (b"C>", b"A>") or zerlege(roh)[1] is not None:
             return roh
         return args.id.encode() + b">" + roh
 
+    gesendet = Gesendet()
     warteschlange = []
     if args.send:
         warteschlange.append(mit_kennung(args.send.encode()))
@@ -368,7 +414,7 @@ def main():
             except ValueError:
                 continue
             for pkt in body.get("rxpk", []):
-                handle_rxpk(pkt, args, mq)
+                handle_rxpk(pkt, args, mq, gesendet)
 
         elif kind == PULL_DATA:
             s.sendto(bytes([data[0]]) + token + bytes([PULL_ACK]), peer)
