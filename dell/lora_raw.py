@@ -54,6 +54,10 @@ HEXZIFFERN = set("0123456789ABCDEF")
 # Rahmen.
 EBYTE_MAGIC = 0x2C
 EBYTE_KOPF = 8
+EBYTE_XOR = 0x12            # Weissung, konstant -- nicht die Kanalnummer
+EBYTE_KANAL = 18            # 850.125 + 18 = 868.125 MHz, Werksdefault der 900er
+EBYTE_NETID = 0x00          # muss geraeteweit gleich sein, sonst leitet der
+                            # E90-Repeater gemessen nicht weiter
 
 
 def eigene_kennung():
@@ -71,16 +75,48 @@ def eigene_kennung():
     return "0000"
 
 
-def ebyte_absender(roh):
-    """Absenderadresse als vier Hexstellen, oder None wenn kein Ebyte-Rahmen.
+def ist_ebyte(roh):
+    """Kennung in Byte 0 und Laengenangabe in Byte 7 zusammen sind ein
+    belastbares Merkmal, das Textpakete nicht zufaellig erfuellen."""
+    return (len(roh) > EBYTE_KOPF and roh[0] == EBYTE_MAGIC
+            and roh[EBYTE_KOPF - 1] == len(roh) - EBYTE_KOPF)
 
-    Kennung in Byte 0 und Laengenangabe in Byte 7 zusammen sind ein
-    belastbares Merkmal, das Textpakete nicht zufaellig erfuellen.
+
+def ebyte_absender(roh):
+    """Absenderadresse als vier Hexstellen, oder None wenn kein Ebyte-Rahmen."""
+    return "%02X%02X" % (roh[5], roh[6]) if ist_ebyte(roh) else None
+
+
+def ebyte_nutzlast(roh):
+    """Klartext-Nutzlast aus einem Ebyte-Rahmen (XOR-Weissung zuruecknehmen)."""
+    laenge = roh[EBYTE_KOPF - 1]
+    return bytes(b ^ EBYTE_XOR for b in roh[EBYTE_KOPF:EBYTE_KOPF + laenge])
+
+
+def ebyte_rahmen(nutz, kennung):
+    """Nutzlast in einen Ebyte-Rahmen packen.
+
+    Ein E22/E90 verwirft alles, was nicht seinem Format entspricht -- Klartext
+    kommt dort gar nicht erst zur seriellen Seite. Wer ueber das Gateway einen
+    Ebyte-Knoten erreichen will, muss deshalb selbst rahmen.
+
+        0x2C | Kanal | xx | xx^0xA1 | NETID | ADDH | ADDL | Laenge | Nutzlast
+
+    xx ist eine XOR-Summe ueber die Nutzlast, kein Zaehler. Die Adresse traegt
+    das sendende Geraet als *eigene* Kennung ein -- hier die vier Hexstellen
+    aus der MAC, damit Text- und Ebyte-Identitaet dieselbe Zahl sind.
     """
-    if (len(roh) > EBYTE_KOPF and roh[0] == EBYTE_MAGIC
-            and roh[EBYTE_KOPF - 1] == len(roh) - EBYTE_KOPF):
-        return "%02X%02X" % (roh[5], roh[6])
-    return None
+    if isinstance(nutz, str):
+        nutz = nutz.encode()
+    nutz = nutz[:255]
+    xx = 0
+    for b in nutz:
+        xx ^= b
+    xx = (xx ^ 0xA0) & 0xFF
+    adr = int(kennung, 16) & 0xFFFF
+    kopf = bytes([EBYTE_MAGIC, EBYTE_KANAL, xx, xx ^ 0xA1, EBYTE_NETID,
+                  (adr >> 8) & 0xFF, adr & 0xFF, len(nutz)])
+    return kopf + bytes(b ^ EBYTE_XOR for b in nutz)
 
 
 def zerlege(roh):
@@ -148,13 +184,22 @@ def handle_rxpk(pkt, args, mq):
     stat = {1: "ok", -1: "CRC-Fehler", 0: "ohne CRC"}.get(pkt.get("stat"), "?")
     sprung, absender, nutz = zerlege(raw)
 
+    # Ebyte-Rahmen aufloesen: der Absender steht in der Adresse, die Nutzlast
+    # ist verweisst. Ohne das bliebe auf MQTT beides leer -- und ein Verbraucher
+    # koennte nicht einmal sagen, von wem ein Paket kam.
+    formt = "text" if absender else "roh"
+    if ist_ebyte(raw):
+        absender = ebyte_absender(raw)
+        nutz = ebyte_nutzlast(raw)
+        formt = "ebyte"
+
     # Selbstfilter. Jedes Geraet muss die eigenen Pakete erkennen: was ueber
     # ein Relais zurueckkommt, ist kein neuer Verkehr. Beide Formate tragen
     # die Absenderkennung mit -- Text als vier Hexstellen vor dem ">", Ebyte
     # als Adresse in Byte 5-6. Ohne diesen Filter wuerde jede Bruecke von
     # MQTT zurueck auf den Steuereingang eine Endlosschleife erzeugen.
-    quelle = ebyte_absender(raw) or absender
-    if args.self_filter and quelle and quelle.upper() == args.id.upper():
+    if args.self_filter and absender and absender.upper() == args.id.upper():
+        quelle = absender
         log.info("%.3f MHz  %-9s RSSI %-5s eigenes Echo von %s%s, %d B "
                  "-- gefiltert (Relais bestaetigt)",
                  freq, pkt.get("datr", "?"), pkt.get("rssi", "?"), quelle,
@@ -172,7 +217,7 @@ def handle_rxpk(pkt, args, mq):
         mq.publish(MQTT_TOPIC, json.dumps({
             "freq": freq, "datr": pkt.get("datr"), "chan": pkt.get("chan"),
             "rssi": pkt.get("rssi"), "snr": pkt.get("lsnr"), "crc": stat,
-            "absender": absender, "sprung": sprung,
+            "absender": absender, "sprung": sprung, "format": formt,
             "raw": raw.hex(), "text": txt, "t": time.time()}), qos=0)
 
 
@@ -190,6 +235,9 @@ def main():
     ap.add_argument("--id", default=None,
                     help="eigene Absenderkennung; Vorgabe sind die letzten "
                          "vier Hexstellen der MAC")
+    ap.add_argument("--no-ebyte", dest="ebyte", action="store_false",
+                    help="ungerahmt senden; ein E22/E90 verwirft das, nur fuer "
+                         "Gegenstellen die rohes LoRa lesen")
     ap.add_argument("--no-self-filter", dest="self_filter",
                     action="store_false",
                     help="eigene Pakete NICHT herausfiltern; nur zum Messen, "
@@ -230,12 +278,20 @@ def main():
     ctrl.bind(("127.0.0.1", args.ctrl_port))
     log.info("Steuereingang auf 127.0.0.1:%d", args.ctrl_port)
 
-    log.info("eigene Kennung %s (aus der MAC), Selbstfilter %s",
-             args.id, "an" if args.self_filter else "AUS")
+    log.info("eigene Kennung %s (aus der MAC), Selbstfilter %s, senden %s",
+             args.id, "an" if args.self_filter else "AUS",
+             "als Ebyte-Rahmen" if args.ebyte else "ungerahmt")
 
     def mit_kennung(roh):
-        """Befehle und Antworten tragen ihr eigenes Praefix, alles andere
-        bekommt die Absenderkennung vorangestellt."""
+        """Sendefertig machen.
+
+        Im Ebyte-Modus wird gerahmt -- die Kennung steckt dann in der Adresse
+        des Rahmens, ein Textpraefix waere doppelt gemoppelt. Sonst wie bisher:
+        Befehle und Antworten tragen ihr eigenes Praefix, alles andere bekommt
+        die Absenderkennung vorangestellt.
+        """
+        if args.ebyte:
+            return ebyte_rahmen(roh, args.id)
         if roh[:2] in (b"C>", b"A>") or zerlege(roh)[1] is not None:
             return roh
         return args.id.encode() + b">" + roh
