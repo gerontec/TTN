@@ -149,7 +149,7 @@ else
     LD_PRELOAD="$SHIM"
 fi
 export LD_PRELOAD
-exec /usr/bin/fwd "$@"
+exec /usr/bin/fwd -d sx1302 "$@"
 WRAP
 chmod +x "$WRAPPER"
 meldung "angelegt: $WRAPPER"
@@ -159,7 +159,12 @@ meldung "angelegt: $WRAPPER"
 if grep -q "fwd_syncword" "$INIT"; then
     meldung "Init-Skript zeigt bereits auf den Wrapper"
 else
-    sed -i "s|^\(\t*\)procd_append_param command -d sx1302|\1procd_set_param command $WRAPPER\n\1procd_append_param command -d sx1302|" "$INIT"
+    # Das Chip-Argument steht im Wrapper, nicht hier: procd verschluckt bei
+    # zwei aufeinanderfolgenden procd_set_param command das Argument, egal ob
+    # per procd_append_param oder direkt mitgegeben -- gemessen, procd startete
+    # dann nur "fwd_syncword". Im Wrapper ist es unserer Kontrolle unterworfen
+    # und wirkt immer.
+    sed -i "s|^\(\t*\)procd_append_param command -d sx1302|\1procd_set_param command $WRAPPER|" "$INIT"
     grep -q "fwd_syncword" "$INIT" || fehler "Init-Skript nicht angepasst, bitte von Hand prüfen"
     chmod +x "$INIT"
     meldung "Init-Skript angepasst (Sicherung: $INIT$SUFFIX)"
