@@ -74,8 +74,44 @@ extern int lgw_com_rmw(uint8_t spi_mux_target, uint16_t address, uint8_t offs, u
 #define REG_TX_B_PEAK1          0x546D      /* TX_TOP_B base 0x5400 + 109 */
 #define REG_TX_B_PEAK2          0x546E
 
+/*
+ * Telling the two kinds of downlink apart.
+ *
+ * A gateway that also serves LoRaWAN must not send join accepts and ADR on a
+ * private sync word -- no end device would accept them. So the substitution is
+ * made conditional on the transmit frequency: only downlinks on the raw
+ * channel get the private sync word, everything else keeps the HAL's value.
+ *
+ * sx1302_send() writes the TX frequency at loragw_sx1302.c:2604-2608, before
+ * the sync word at :2710, so the frequency is already known when we need to
+ * decide. Those three registers are 8 bits at offset 0, which reg_w() sends
+ * down the direct-write path -- hence we watch lgw_com_w(), not lgw_com_rmw().
+ *
+ *   freq_reg = freq_hz * 2^18 / 32e6   ->   122.07 Hz per LSB
+ *
+ * That resolution easily separates the raw channel on 868.125 MHz from
+ * chan_multiSF_0 on 868.100 MHz, 25 kHz away, so a tight window is safe.
+ */
+#define REG_TX_A_FREQ_H         0x5225      /* TX_TOP_A base + 37 */
+#define REG_TX_A_FREQ_M         0x5226
+#define REG_TX_A_FREQ_L         0x5227
+#define REG_TX_B_FREQ_H         0x5425      /* TX_TOP_B base + 37 */
+#define REG_TX_B_FREQ_M         0x5426
+#define REG_TX_B_FREQ_L         0x5427
+
+#define FREQ_FENSTER_HZ         5000        /* +/- 5 kHz around tx_freq */
+
 static int (*real_com_rmw)(uint8_t, uint16_t, uint8_t, uint8_t, uint8_t) = NULL;
+static int (*real_com_w)(uint8_t, uint16_t, uint8_t) = NULL;
 static int sw_tx = -1;                      /* -1 = leave the HAL's value alone */
+static long sw_tx_freq = -1;                /* -1 = apply to every downlink */
+
+/* letzte je Kette geschriebene Frequenz, Index 0 = TX_TOP_A, 1 = TX_TOP_B */
+static uint32_t tx_freq_reg[2] = { 0, 0 };
+
+static long freq_reg_to_hz(uint32_t reg) {
+    return (long)(((uint64_t)reg * 32000000U) >> 18);
+}
 
 static int call_real_rmw(uint8_t mux, uint16_t addr, uint8_t offs, uint8_t leng, uint8_t data) {
     if (real_com_rmw == NULL) {
@@ -85,6 +121,47 @@ static int call_real_rmw(uint8_t mux, uint16_t addr, uint8_t offs, uint8_t leng,
         }
     }
     return real_com_rmw(mux, addr, offs, leng, data);
+}
+
+/*
+ * Should this downlink carry the private sync word? Yes if no frequency filter
+ * is configured, otherwise only when the chain is tuned to it.
+ */
+static int tx_gilt_fuer(int kette) {
+    long hz;
+
+    if (sw_tx_freq < 0) {
+        return 1;                       /* kein Filter -> jeder Downlink */
+    }
+    if ((kette < 0) || (kette > 1)) {
+        return 0;
+    }
+    hz = freq_reg_to_hz(tx_freq_reg[kette]);
+    return ((hz >= sw_tx_freq - FREQ_FENSTER_HZ) &&
+            (hz <= sw_tx_freq + FREQ_FENSTER_HZ)) ? 1 : 0;
+}
+
+/*
+ * Interposed direct register write. Only used to watch the three TX frequency
+ * bytes go by; everything is passed through untouched.
+ */
+int lgw_com_w(uint8_t spi_mux_target, uint16_t address, uint8_t data) {
+    if (real_com_w == NULL) {
+        real_com_w = dlsym(RTLD_NEXT, "lgw_com_w");
+        if (real_com_w == NULL) {
+            return -1;
+        }
+    }
+    switch (address) {
+        case REG_TX_A_FREQ_H: tx_freq_reg[0] = (tx_freq_reg[0] & 0x0000FFFF) | ((uint32_t)data << 16); break;
+        case REG_TX_A_FREQ_M: tx_freq_reg[0] = (tx_freq_reg[0] & 0x00FF00FF) | ((uint32_t)data <<  8); break;
+        case REG_TX_A_FREQ_L: tx_freq_reg[0] = (tx_freq_reg[0] & 0x00FFFF00) | ((uint32_t)data <<  0); break;
+        case REG_TX_B_FREQ_H: tx_freq_reg[1] = (tx_freq_reg[1] & 0x0000FFFF) | ((uint32_t)data << 16); break;
+        case REG_TX_B_FREQ_M: tx_freq_reg[1] = (tx_freq_reg[1] & 0x00FF00FF) | ((uint32_t)data <<  8); break;
+        case REG_TX_B_FREQ_L: tx_freq_reg[1] = (tx_freq_reg[1] & 0x00FFFF00) | ((uint32_t)data <<  0); break;
+        default: break;
+    }
+    return real_com_w(spi_mux_target, address, data);
 }
 
 #define SPI_MUX_TARGET_SX1302   0x00
@@ -133,6 +210,7 @@ struct syncword_set {
     int service;
     int ldro;       /* LoRa Service modem LDRO: SW_AUTO, 0 or 1 */
     int tx;         /* transmit sync word, SW_AUTO = stock */
+    long tx_freq;   /* nur Downlinks auf dieser Frequenz, -1 = alle */
 };
 
 static void parse_line(char * line, struct syncword_set * sw) {
@@ -152,6 +230,20 @@ static void parse_line(char * line, struct syncword_set * sw) {
     else if (strcmp(key, "service") == 0) target = &sw->service;
     else if (strcmp(key, "ldro")    == 0) target = &sw->ldro;
     else if (strcmp(key, "tx")      == 0) target = &sw->tx;
+    else if (strcmp(key, "tx_freq") == 0) {
+        if (strcmp(val, "auto") == 0) {
+            sw->tx_freq = -1;
+            return;
+        }
+        errno = 0;
+        parsed = strtol(val, &end, 0);
+        if ((errno != 0) || (end == val) || (*end != '\0') || (parsed < 0)) {
+            printf("WARNING: [syncword] ignoring invalid value \"%s\" for key \"tx_freq\"\n", val);
+            return;
+        }
+        sw->tx_freq = parsed;
+        return;
+    }
     else return;
 
     if (strcmp(val, "auto") == 0) {
@@ -242,16 +334,11 @@ static void bench_switch(int sw) {
 int lgw_com_rmw(uint8_t spi_mux_target, uint16_t address, uint8_t offs, uint8_t leng, uint8_t data) {
     if (sw_tx >= 0) {
         switch (address) {
-            case REG_TX_A_PEAK1:
-            case REG_TX_B_PEAK1:
-                data = PEAK1(sw_tx);
-                break;
-            case REG_TX_A_PEAK2:
-            case REG_TX_B_PEAK2:
-                data = PEAK2(sw_tx);
-                break;
-            default:
-                break;
+            case REG_TX_A_PEAK1: if (tx_gilt_fuer(0)) data = PEAK1(sw_tx); break;
+            case REG_TX_A_PEAK2: if (tx_gilt_fuer(0)) data = PEAK2(sw_tx); break;
+            case REG_TX_B_PEAK1: if (tx_gilt_fuer(1)) data = PEAK1(sw_tx); break;
+            case REG_TX_B_PEAK2: if (tx_gilt_fuer(1)) data = PEAK2(sw_tx); break;
+            default: break;
         }
     }
     return call_real_rmw(spi_mux_target, address, offs, leng, data);
@@ -262,7 +349,7 @@ int lgw_com_rmw(uint8_t spi_mux_target, uint16_t address, uint8_t offs, uint8_t 
  * ABI of libsx1302hal.so is untouched -- no struct crosses this boundary.
  */
 int sx1302_lora_syncword(bool public, uint8_t lora_service_sf) {
-    struct syncword_set sw = { SW_AUTO, SW_AUTO, SW_AUTO, SW_AUTO, SW_AUTO, SW_AUTO };
+    struct syncword_set sw = { SW_AUTO, SW_AUTO, SW_AUTO, SW_AUTO, SW_AUTO, SW_AUTO, -1 };
     int err = 0;
 
     load_conf(&sw);
@@ -287,9 +374,16 @@ int sx1302_lora_syncword(bool public, uint8_t lora_service_sf) {
         printf("INFO: [syncword] LoRa Service LDRO forced to %d (HAL rule overridden)\n", sw.ldro);
     }
 
-    sw_tx = sw.tx;      /* aktiviert die Umschreibung in lgw_com_rmw() */
+    sw_tx = sw.tx;              /* aktiviert die Umschreibung in lgw_com_rmw() */
+    sw_tx_freq = sw.tx_freq;
     if (sw_tx >= 0) {
-        printf("INFO: [syncword] TX sync word forced to 0x%02X for every downlink\n", (uint8_t)sw_tx);
+        if (sw_tx_freq >= 0) {
+            printf("INFO: [syncword] TX sync word 0x%02X, nur fuer Downlinks auf %ld Hz (+/- %d Hz)\n",
+                   (uint8_t)sw_tx, sw_tx_freq, FREQ_FENSTER_HZ);
+        } else {
+            printf("INFO: [syncword] TX sync word 0x%02X fuer JEDEN Downlink -- auch LoRaWAN!\n",
+                   (uint8_t)sw_tx);
+        }
     }
 
     bench_switch(sw.sf7to12);

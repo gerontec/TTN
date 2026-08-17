@@ -7,7 +7,7 @@ Alle Werte an der Luft ausgemessen, nicht aus dem Handbuch:
 
     Frequenz   868.125 MHz   (Kanal 18, Handbuch: 850.125 + CH * 1M)
     Modulation SF11 / BW500 / LDRO 1
-    Syncword   0x58          (Register 0x0740 = 54 84)
+    Syncword   0x55          (Register 0x0740 = 54 54)
 
 **LDRO muss 1 sein.** Mit 0 rastet der Header ein und jede Nutzlast kommt mit
 CRC-Fehler an -- derselbe irrefuehrende Fast-Treffer wie beim 400er.
@@ -32,7 +32,7 @@ FREQ_HZ = 868125000
 SF = 11
 BW_HZ = 500000
 LDRO = 1
-SYNCWORD = 0x58
+SYNCWORD = 0x55
 POWER_DBM = 14          # 868.0-868.6 MHz: 25 mW ERP, 1 % Duty Cycle
 MAGIC = b"\x2c\x12"     # der 400er benutzt hier 0x17
 # NETID 0 und eigene Adresse 0x0C2B.

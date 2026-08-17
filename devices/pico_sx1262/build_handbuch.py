@@ -418,13 +418,28 @@ eine Gegenstelle auf 0x55 hört ihn nie.</p>
 <code>lgw_com_rmw()</code> mit Umschreiben der vier TX-Register
 <code>0x526D/0x526E</code> und <code>0x546D/0x546E</code> — adressbasiert, also
 wieder ohne Bindung an Draginos Strukturen.</p>
-<div class="warn"><b><code>tx</code> wirkt auf jeden Downlink, auch auf
-LoRaWAN.</b> Ein Gateway, das LoRaWAN bedient, würde Join-Accepts und
-ADR-Kommandos auf einem Syncword senden, das kein Endgerät annimmt. Deshalb ist
-die Vorgabe <code>auto</code>. Auf <code>0x55</code> nur dort stellen, wo über
-dasselbe Gateway keine LoRaWAN-Downlinks laufen müssen.
-<br><br>Sauber wäre eine Unterscheidung nach Sendefrequenz — der Rohkanal liegt
-auf 868.125 MHz, LoRaWAN-Downlinks auf RX1/RX2. Das ist noch nicht umgesetzt.</div>
+<p><code>tx</code> allein würde auf <i>jeden</i> Downlink wirken, auch auf die
+von LoRaWAN — Join-Accepts und ADR gingen dann auf einem Syncword hinaus, das
+kein Endgerät annimmt. Deshalb gibt es <code>tx_freq</code>:</p>
+<pre>tx      = 0x55
+tx_freq = 868125000     # nur Downlinks auf dieser Frequenz, Fenster +/- 5 kHz</pre>
+<p>Möglich wird das dadurch, dass <code>sx1302_send()</code> die Sendefrequenz
+in <code>loragw_sx1302.c:2604-2608</code> schreibt, <b>bevor</b> es in
+<code>:2710</code> zum Syncword kommt. Der Shim liest die drei Frequenzbytes im
+Vorbeigehen mit (sie laufen als 8-Bit-Direktschreibung über
+<code>lgw_com_w()</code>, nicht über <code>lgw_com_rmw()</code>) und entscheidet
+dann je Sendekette. Die Auflösung beträgt <code>32 MHz / 2<sup>18</sup></code> =
+122 Hz, das trennt den Rohkanal auf 868.125 mühelos von
+<code>chan_multiSF_0</code> auf 868.100, 25 kHz daneben.</p>
+<table>
+<tr><th><code>tx_freq</code></th><th>Downlink auf 868.125</th><th>peak1 / peak2</th><th>Syncword</th></tr>
+<tr><td><code>868125000</code></td><td>Rohkanal getroffen</td><td>10 / 10</td><td><b>0x55</b> umgeschrieben</td></tr>
+<tr><td><code>869525000</code> (RX2)</td><td>passt nicht</td><td>6 / 8</td><td>0x34, HAL-Wert unberührt</td></tr>
+</table>
+<div class="merk">Beim Ablesen der Register nicht stolpern: das Peak-Feld sind
+die <b>unteren fünf Bit</b>. <code>0x526D = 0xAA</code> heißt
+<code>0xAA &amp; 0x1F = 10</code>; die oberen Bits tragen AUTO_SCALE, GAIN und
+DROP_ON_SYNCH.</div>
 
 <div class="merk"><b>Funkrechtlich.</b> 868.0–868.6 MHz erlaubt 25 mW ERP bei
 1 % Sendezeit. Ein Rohkanal mit BW 500 kHz auf 868.125 MHz belegt

@@ -22,6 +22,7 @@ Ein Node mit dem privaten 0x12 wird nicht gehoert, siehe README.
 import argparse
 import base64
 import binascii
+import glob
 import json
 import logging
 import select
@@ -33,6 +34,43 @@ PORT = 1702
 RAW_FREQ = 868.125          # chan_Lora_std, siehe /etc/lora/global_conf.json
 FREQ_TOL = 0.02             # MHz; deckt den Quarzversatz des Nodes ab
 MQTT_TOPIC = "lora/raw"
+
+# Rahmenformat des Krisennetzes, siehe devices/pico_sx1262/repeater.py:
+#   frisch          IIII>nutzlast
+#   weitergegeben   RnIIII>nutzlast
+#   Befehl/Antwort  C>... bzw. A>IIII>...
+ID_LEN = 4
+HEXZIFFERN = set("0123456789ABCDEF")
+
+
+def eigene_kennung():
+    """Letzte vier Hexstellen der MAC. Ohne Vergabeliste eindeutig und von
+    Haus aus gueltiges Hex -- ein sprechendes Kuerzel waere es nicht."""
+    for pfad in sorted(glob.glob("/sys/class/net/*/address")):
+        if "/lo/" in pfad:
+            continue
+        try:
+            mac = open(pfad).read().strip().replace(":", "").upper()
+        except OSError:
+            continue
+        if len(mac) == 12 and mac != "0" * 12 and set(mac) <= HEXZIFFERN:
+            return mac[-ID_LEN:]
+    return "0000"
+
+
+def zerlege(roh):
+    """(sprung, absender, nutzlast); absender None = ohne Kennung."""
+    try:
+        t = roh.decode("utf-8")
+    except UnicodeDecodeError:
+        return 0, None, roh
+    if (len(t) > ID_LEN + 3 and t[0] == "R" and t[1].isdigit()
+            and t[2 + ID_LEN] == ">" and set(t[2:2 + ID_LEN].upper()) <= HEXZIFFERN):
+        return int(t[1]), t[2:2 + ID_LEN], roh[3 + ID_LEN:]
+    if (len(t) > ID_LEN and t[ID_LEN] == ">"
+            and set(t[0:ID_LEN].upper()) <= HEXZIFFERN):
+        return 0, t[0:ID_LEN], roh[ID_LEN + 1:]
+    return 0, None, roh
 
 # Semtech UDP protocol v2, Byte 3 des Kopfes
 PUSH_DATA, PUSH_ACK, PULL_DATA, PULL_RESP, PULL_ACK, TX_ACK = 0, 1, 2, 3, 4, 5
@@ -83,16 +121,20 @@ def handle_rxpk(pkt, args, mq):
             return
 
     stat = {1: "ok", -1: "CRC-Fehler", 0: "ohne CRC"}.get(pkt.get("stat"), "?")
-    txt = printable(raw)
-    log.info("%.3f MHz  %-9s ch%-2s RSSI %-5s SNR %-5s CRC %-10s %3dB  %s%s",
-             freq, pkt.get("datr", "?"), pkt.get("chan", "?"),
-             pkt.get("rssi", "?"), pkt.get("lsnr", "?"), stat, len(raw),
-             raw.hex(), '  "%s"' % txt if txt else "")
+    sprung, absender, nutz = zerlege(raw)
+    txt = printable(nutz)
+    herkunft = "%s%s" % (absender or "----",
+                         "/%d" % sprung if sprung else "   ")
+    log.info("%.3f MHz  %-9s RSSI %-5s SNR %-5s CRC %-10s von %-8s %3dB  %s",
+             freq, pkt.get("datr", "?"), pkt.get("rssi", "?"),
+             pkt.get("lsnr", "?"), stat, herkunft, len(nutz),
+             '"%s"' % txt if txt else nutz.hex())
 
     if mq is not None:
         mq.publish(MQTT_TOPIC, json.dumps({
             "freq": freq, "datr": pkt.get("datr"), "chan": pkt.get("chan"),
             "rssi": pkt.get("rssi"), "snr": pkt.get("lsnr"), "crc": stat,
+            "absender": absender, "sprung": sprung,
             "raw": raw.hex(), "text": txt, "t": time.time()}), qos=0)
 
 
@@ -107,12 +149,18 @@ def main():
                     help="zusaetzlich auf mosquitto veroeffentlichen")
     ap.add_argument("--send", metavar="TEXT",
                     help="einmal rohes LoRa senden, sobald das Gateway PULL_DATA schickt")
+    ap.add_argument("--id", default=None,
+                    help="eigene Absenderkennung; Vorgabe sind die letzten "
+                         "vier Hexstellen der MAC")
     ap.add_argument("--ctrl-port", type=int, default=1703,
                     help="lokaler Steuereingang; was hier ankommt, wird gefunkt")
     ap.add_argument("--datr", default="SF7BW125")
     ap.add_argument("--power", type=int, default=14,
                     help="dBm ERP; 14 = 25 mW, das Limit in 868.0-868.6")
     args = ap.parse_args()
+
+    if args.id is None:
+        args.id = eigene_kennung()
 
     logging.basicConfig(level=logging.INFO, stream=sys.stdout,
                         format="%(asctime)s %(message)s",
@@ -138,14 +186,24 @@ def main():
     ctrl.bind(("127.0.0.1", args.ctrl_port))
     log.info("Steuereingang auf 127.0.0.1:%d", args.ctrl_port)
 
+    log.info("eigene Kennung %s (aus der MAC)", args.id)
+
+    def mit_kennung(roh):
+        """Befehle und Antworten tragen ihr eigenes Praefix, alles andere
+        bekommt die Absenderkennung vorangestellt."""
+        if roh[:2] in (b"C>", b"A>") or zerlege(roh)[1] is not None:
+            return roh
+        return args.id.encode() + b">" + roh
+
     warteschlange = []
     if args.send:
-        warteschlange.append(args.send.encode())
+        warteschlange.append(mit_kennung(args.send.encode()))
 
     while True:
         bereit, _, _ = select.select([s, ctrl], [], [], 1.0)
         if ctrl in bereit:
             roh, _ = ctrl.recvfrom(4096)
+            roh = mit_kennung(roh)
             warteschlange.append(roh)
             log.info("eingereiht: %r", roh)
         if s not in bereit:

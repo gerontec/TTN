@@ -115,11 +115,29 @@ in `syncword.conf` schreibt stattdessen die vier TX-Register `0x526D/0x526E`
 (TX_TOP_A) und `0x546D/0x546E` (TX_TOP_B) um, umgesetzt durch Interposition von
 `lgw_com_rmw()` — adressbasiert, also wieder ohne ABI-Bindung.
 
-**`tx` wirkt auf jeden Downlink, auch auf LoRaWAN.** Ein Gateway im
-LoRaWAN-Betrieb würde Join-Accepts und ADR auf einem Syncword senden, das kein
-Endgerät annimmt. Deshalb ist die Vorgabe `auto`. Sauber wäre eine
-Unterscheidung nach Sendefrequenz (Rohkanal 868.125 gegen RX1/RX2) — noch nicht
-umgesetzt.
+`tx` allein würde auf **jeden** Downlink wirken, auch auf die von LoRaWAN.
+Deshalb `tx_freq`:
+
+```
+tx      = 0x55
+tx_freq = 868125000     # nur Downlinks auf dieser Frequenz, Fenster ±5 kHz
+```
+
+`sx1302_send()` schreibt die Sendefrequenz in `loragw_sx1302.c:2604-2608`,
+**bevor** in `:2710` das Syncword folgt. Der Shim liest die drei Frequenzbytes
+im Vorbeigehen mit — sie laufen als 8-Bit-Direktschreibung über `lgw_com_w()`,
+nicht über `lgw_com_rmw()` — und entscheidet je Sendekette. Auflösung
+`32 MHz / 2^18` = 122 Hz, damit ist 868.125 sauber von 868.100 getrennt.
+
+Verifiziert über einen echten Downlink auf 868.125:
+
+| `tx_freq` | peak1 / peak2 | Syncword |
+|---|---|---|
+| `868125000` | 10 / 10 | **0x55**, umgeschrieben |
+| `869525000` (RX2) | 6 / 8 | 0x34, HAL-Wert unberührt |
+
+Beim Ablesen: das Peak-Feld sind die **unteren fünf Bit**, `0x526D = 0xAA`
+heißt `0xAA & 0x1F = 10`.
 
 ## sx1302_poke — Register im laufenden Betrieb
 

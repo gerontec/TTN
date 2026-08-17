@@ -1,13 +1,19 @@
 """Rohes LoRa auf dem Raspberry Pi Pico mit Waveshare Pico-LoRa-SX1262.
 
-Sendet auf dem Rohkanal des DLOS8N (868.125 MHz, SF7, BW125, CR 4/5,
+Sendet auf dem Rohkanal des DLOS8N (868.125 MHz, SF11, BW500, LDRO 1, CR 4/5,
 Preamble 8, CRC an, expliziter Header) und wird dort als `rxpk.data` an
 `192.168.5.23:1702` weitergereicht -- siehe gateway/RAWKANAL.md.
 
-Das entscheidende Detail ist das **Syncword 0x34**. Der SX1302 im Gateway kennt
-nur ein Syncword fuer den ganzen Chip (`lorawan_public: true`); ein Node mit dem
-Werkswert 0x12 wird schlicht nicht gehoert. Beim SX1262 sitzt es in den
-Registern 0x0740/0x0741, und zwar als 0x34,0x44 -- nicht 0x34,0x00.
+Die Vorgaben sind seit dem 17.08.2026 das **Ebyte-Profil**, damit der Pico
+dieselbe Luft spricht wie E22 und E90-DTU. Frueher stand hier SF7/BW125 mit
+Syncword 0x34, weil der Rohkanal das Syncword der LoRaWAN-Kanaele mitbenutzen
+musste. Das ist nicht mehr noetig: `chan_Lora_std` hat im SX1302 ein eigenes
+Syncword-Register, siehe gateway/sx1302_syncword/.
+
+Das Syncword ist **0x55**, nicht 0x58. Beim SX1262 sitzt es in den Registern
+0x0740/0x0741 als 0x54,0x54 -- das untere Nibble wird jeweils auf 4 gezogen.
+Ein SX126x wertet beim Empfang nur das erste Byte aus, weshalb hier frueher
+0x58 stand; der SX1302 prueft beide und hat den Wert aufgeloest.
 
 Zwei weitere Fallen dieses Boards, beide nachgemessen:
 
@@ -29,11 +35,12 @@ import utime
 
 # --- Funkparameter, muessen zum Rohkanal des Gateways passen ---------------
 FREQ_HZ   = 868125000
-SF        = 7
-BW_HZ     = 125000
+SF        = 11         # Ebyte-Luftrate 2.4k; die Etiketten sind nominal
+BW_HZ     = 500000     # die Ebyte-Leiter ist durchgehend BW500, nie BW125
 CR        = 1          # 1..4 = 4/5..4/8
 PREAMBLE  = 8
-SYNCWORD  = 0x34       # oeffentlich; 0x12 waere privat und wird nicht gehoert
+SYNCWORD  = 0x55       # Ebyte-Werkswert, am SX1302 ausgemessen -- nicht 0x58
+LDRO      = 1          # Ebyte sendet mit 1; die Rechenregel kaeme auf 0
 CRC_ON    = True
 POWER_DBM = 14         # 25 mW ERP, das Limit in 868.0-868.6 MHz
 BEACON_S  = 30
@@ -158,7 +165,7 @@ class SX1262:
         self.cmd([SET_PACKET_TYPE, 0x01])                 # LoRa
         self.set_frequency(FREQ_HZ)
         self.set_power(POWER_DBM)
-        self.set_modulation(SF, BW_HZ, CR)
+        self.set_modulation(SF, BW_HZ, CR, LDRO)
         self.set_syncword(SYNCWORD)
         self.cmd([SET_BUFFER_BASE, 0x00, 0x00])
 
@@ -184,9 +191,15 @@ class SX1262:
         self.cmd([SET_PA_CONFIG, duty, hpmax, 0x00, 0x01])
         self.cmd([SET_TX_PARAMS, dbm & 0xFF, 0x04])       # Rampe 200 us
 
-    def set_modulation(self, sf, bw, cr):
-        # Low Data Rate Optimize ist Pflicht, sobald ein Symbol > 16 ms dauert
-        ldro = 1 if (1 << sf) / (bw / 1000.0) > 16.0 else 0
+    def set_modulation(self, sf, bw, cr, ldro=None):
+        """ldro=None rechnet die Regel aus, ein Wert setzt sie ausser Kraft.
+
+        Die Regel (Symboldauer > 16 ms) trifft fuer Ebyte nicht zu: dort ist
+        LDRO ab Werk 1, auch bei SF11/BW500 mit 4 ms. Mit dem falschen Wert
+        rastet der Header ein und HeaderValid feuert -- aber *jede* Nutzlast
+        kommt mit CRC-Fehler an. Siehe EBYTE_E90.md, Abschnitt Fallen."""
+        if ldro is None:
+            ldro = 1 if (1 << sf) / (bw / 1000.0) > 16.0 else 0
         self.cmd([SET_MODULATION_PARAMS, sf, BW_TABLE[bw], cr, ldro])
         # merken, damit send() seine Zeitschranke an die Luftzeit anpassen kann
         self.sf, self.bw, self.cr = sf, bw, cr
