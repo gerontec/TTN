@@ -32,6 +32,9 @@ import time
 
 PORT = 1702
 RAW_FREQ = 868.125          # chan_Lora_std, siehe /etc/lora/global_conf.json
+RAW_DATR = "SF11BW500"      # dito -- Ebyte-Profil seit 17.08.2026. Stand hier
+                            # bis dahin auf SF7BW125: Downlinks gingen dann mit
+                            # falscher Modulation hinaus und niemand hoerte sie.
 FREQ_TOL = 0.02             # MHz; deckt den Quarzversatz des Nodes ab
 MQTT_TOPIC = "lora/raw"
 
@@ -193,7 +196,9 @@ def main():
                          "im Regelbetrieb droht sonst eine Rueckkopplung")
     ap.add_argument("--ctrl-port", type=int, default=1703,
                     help="lokaler Steuereingang; was hier ankommt, wird gefunkt")
-    ap.add_argument("--datr", default="SF7BW125")
+    ap.add_argument("--datr", default=RAW_DATR,
+                    help="Modulation des Rohkanals; muss zu chan_Lora_std "
+                         "im global_conf.json des Gateways passen")
     ap.add_argument("--power", type=int, default=14,
                     help="dBm ERP; 14 = 25 mW, das Limit in 868.0-868.6")
     args = ap.parse_args()
