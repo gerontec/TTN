@@ -1,0 +1,213 @@
+diff --git a/libloragw/inc/loragw_sx1302.h b/libloragw/inc/loragw_sx1302.h
+index 9751621..7abbb83 100644
+--- a/libloragw/inc/loragw_sx1302.h
++++ b/libloragw/inc/loragw_sx1302.h
+@@ -210,6 +210,27 @@ int sx1302_lora_service_correlator_configure(struct lgw_conf_rxif_s * cfg);
+ */
+ int sx1302_lora_syncword(bool public, uint8_t lora_service_sf);
+ 
++/**
++@brief Override the sync word of each independent SX1302 RX demodulator block.
++
++The SX1302 has no per-IF-channel sync word register: the 8 multi-SF channels
++share one register set, split by spreading factor only. chan_Lora_std (the LoRa
++Service modem) has its own, and is therefore the only channel that can carry a
++sync word different from the LoRaWAN ones.
++
++Must be called before lgw_start(). Values may be any sync word 0x00..0xFF, or
++LGW_SYNCWORD_AUTO to keep the stock behaviour derived from lorawan_public.
++Settings made here take precedence over /etc/lora/syncword.conf.
++
++@param sf5      sync word for the multi-SF block, SF5
++@param sf6      sync word for the multi-SF block, SF6
++@param sf7to12  sync word for the multi-SF block, SF7..SF12
++@param service  sync word for the LoRa Service modem (chan_Lora_std)
++@return LGW_REG_SUCCESS if success, LGW_REG_ERROR otherwise
++*/
++#define LGW_SYNCWORD_AUTO (-1)
++int lgw_syncword_override(int sf5, int sf6, int sf7to12, int service);
++
+ /**
+ @brief Configure the LoRa multi-SF modems
+ @param radio_freq_hz    The center frequency of the RF chain (0 or 1)
+diff --git a/libloragw/src/loragw_sx1302.c b/libloragw/src/loragw_sx1302.c
+index aa330cd..6fa520d 100644
+--- a/libloragw/src/loragw_sx1302.c
++++ b/libloragw/src/loragw_sx1302.c
+@@ -22,6 +22,8 @@ License: Revised BSD License, see LICENSE.TXT file include in the project
+ #include <math.h>       /* pow, cell */
+ #include <inttypes.h>
+ #include <time.h>
++#include <stdlib.h>     /* strtol */
++#include <errno.h>      /* errno */
+ 
+ #include "loragw_reg.h"
+ #include "loragw_aux.h"
+@@ -1108,35 +1110,142 @@ int sx1302_modem_enable(void) {
+ 
+ /* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
+ 
+-int sx1302_lora_syncword(bool public, uint8_t lora_service_sf) {
+-    int err = LGW_REG_SUCCESS;
++/* -------------------------------------------------------------------------- */
++/* --- PER-DEMODULATOR SYNC WORD OVERRIDE ----------------------------------- */
++
++/* The SX1302 holds four independent RX sync word register pairs:
++     - RX_TOP  SF5        : shared by all 8 multi-SF IF channels, SF5 only
++     - RX_TOP  SF6        : shared by all 8 multi-SF IF channels, SF6 only
++     - RX_TOP  SF7TO12    : shared by all 8 multi-SF IF channels, SF7..SF12
++     - LORA_SERVICE       : the standalone chan_Lora_std demodulator
++   There is no per-IF-channel register, so a single multi-SF channel cannot be
++   given its own sync word. chan_Lora_std can, and is the channel to use for a
++   private / non-LoRaWAN link running alongside the 8 LoRaWAN channels.
++
++   A sync word 0xHL is carried by the two preamble sync symbols; the SX1302
++   stores each as symbol_value/4, i.e. peak_pos = nibble * 2. The field is 5
++   bits and reg_w() masks to that width, so the whole range 0x00..0xFF is
++   reachable -- the 0x12/0x34 restriction is purely a software convention. */
++
++#define SX1302_SW_AUTO      (-1)    /* keep stock lorawan_public behaviour */
++#define SX1302_SW_CONF_PATH "/etc/lora/syncword.conf"
++
++#define SW_PEAK1(sw) ((int32_t)((((uint8_t)(sw)) >> 4) & 0x0F) * 2)
++#define SW_PEAK2(sw) ((int32_t)((((uint8_t)(sw)) >> 0) & 0x0F) * 2)
++
++/* set through lgw_syncword_override(); takes precedence over the conf file */
++static int sw_api_sf5     = SX1302_SW_AUTO;
++static int sw_api_sf6     = SX1302_SW_AUTO;
++static int sw_api_sf7to12 = SX1302_SW_AUTO;
++static int sw_api_service = SX1302_SW_AUTO;
++
++/* Parse one "key = value" line. Value is "auto", 0xNN, or decimal 0..255. */
++static void sw_parse_line(char * line, int * sf5, int * sf6, int * sf7to12, int * service) {
++    char key[32];
++    char val[32];
++    int * target = NULL;
++    long parsed;
++    char * end;
++
++    if (sscanf(line, " %31[A-Za-z0-9_] = %31s", key, val) != 2) {
++        return; /* comment, blank or malformed line */
++    }
++
++    if      (strcmp(key, "sf5")     == 0) target = sf5;
++    else if (strcmp(key, "sf6")     == 0) target = sf6;
++    else if (strcmp(key, "sf7to12") == 0) target = sf7to12;
++    else if (strcmp(key, "service") == 0) target = service;
++    else return;
++
++    if (strcmp(val, "auto") == 0) {
++        *target = SX1302_SW_AUTO;
++        return;
++    }
++
++    errno = 0;
++    parsed = strtol(val, &end, 0); /* base 0 -> accepts 0x.. and decimal */
++    if ((errno != 0) || (end == val) || (*end != '\0') || (parsed < 0) || (parsed > 255)) {
++        printf("WARNING: [syncword] ignoring invalid value \"%s\" for key \"%s\"\n", val, key);
++        return;
++    }
++    *target = (int)parsed;
++}
+ 
+-    /* Multi-SF modem configuration */
+-    DEBUG_MSG("INFO: configuring LoRa (Multi-SF) SF5->SF6 with syncword PRIVATE (0x12)\n");
+-    err |= lgw_reg_w(SX1302_REG_RX_TOP_FRAME_SYNCH0_SF5_PEAK1_POS_SF5, 2);
+-    err |= lgw_reg_w(SX1302_REG_RX_TOP_FRAME_SYNCH1_SF5_PEAK2_POS_SF5, 4);
+-    err |= lgw_reg_w(SX1302_REG_RX_TOP_FRAME_SYNCH0_SF6_PEAK1_POS_SF6, 2);
+-    err |= lgw_reg_w(SX1302_REG_RX_TOP_FRAME_SYNCH1_SF6_PEAK2_POS_SF6, 4);
+-    if (public == true) {
+-        DEBUG_MSG("INFO: configuring LoRa (Multi-SF) SF7->SF12 with syncword PUBLIC (0x34)\n");
+-        err |= lgw_reg_w(SX1302_REG_RX_TOP_FRAME_SYNCH0_SF7TO12_PEAK1_POS_SF7TO12, 6);
+-        err |= lgw_reg_w(SX1302_REG_RX_TOP_FRAME_SYNCH1_SF7TO12_PEAK2_POS_SF7TO12, 8);
+-    } else {
+-        DEBUG_MSG("INFO: configuring LoRa (Multi-SF) SF7->SF12 with syncword PRIVATE (0x12)\n");
+-        err |= lgw_reg_w(SX1302_REG_RX_TOP_FRAME_SYNCH0_SF7TO12_PEAK1_POS_SF7TO12, 2);
+-        err |= lgw_reg_w(SX1302_REG_RX_TOP_FRAME_SYNCH1_SF7TO12_PEAK2_POS_SF7TO12, 4);
++static void sw_load(int * sf5, int * sf6, int * sf7to12, int * service) {
++    FILE * f;
++    char line[128];
++
++    /* conf file first, so that an unmodified packet forwarder can drive this */
++    f = fopen(SX1302_SW_CONF_PATH, "r");
++    if (f != NULL) {
++        while (fgets(line, sizeof line, f) != NULL) {
++            char * hash = strchr(line, '#');
++            if (hash != NULL) {
++                *hash = '\0';
++            }
++            sw_parse_line(line, sf5, sf6, sf7to12, service);
++        }
++        fclose(f);
+     }
+ 
+-    /* LoRa Service modem configuration */
+-    if ((public == false) || (lora_service_sf == DR_LORA_SF5) || (lora_service_sf == DR_LORA_SF6)) {
+-        DEBUG_PRINTF("INFO: configuring LoRa (Service) SF%u with syncword PRIVATE (0x12)\n", lora_service_sf);
+-        err |= lgw_reg_w(SX1302_REG_RX_TOP_LORA_SERVICE_FSK_FRAME_SYNCH0_PEAK1_POS, 2);
+-        err |= lgw_reg_w(SX1302_REG_RX_TOP_LORA_SERVICE_FSK_FRAME_SYNCH1_PEAK2_POS, 4);
+-    } else {
+-        DEBUG_PRINTF("INFO: configuring LoRa (Service) SF%u with syncword PUBLIC (0x34)\n", lora_service_sf);
+-        err |= lgw_reg_w(SX1302_REG_RX_TOP_LORA_SERVICE_FSK_FRAME_SYNCH0_PEAK1_POS, 6);
+-        err |= lgw_reg_w(SX1302_REG_RX_TOP_LORA_SERVICE_FSK_FRAME_SYNCH1_PEAK2_POS, 8);
++    /* explicit API calls win over the conf file */
++    if (sw_api_sf5     != SX1302_SW_AUTO) *sf5     = sw_api_sf5;
++    if (sw_api_sf6     != SX1302_SW_AUTO) *sf6     = sw_api_sf6;
++    if (sw_api_sf7to12 != SX1302_SW_AUTO) *sf7to12 = sw_api_sf7to12;
++    if (sw_api_service != SX1302_SW_AUTO) *service = sw_api_service;
++}
++
++int lgw_syncword_override(int sf5, int sf6, int sf7to12, int service) {
++    if ((sf5     < SX1302_SW_AUTO) || (sf5     > 255) ||
++        (sf6     < SX1302_SW_AUTO) || (sf6     > 255) ||
++        (sf7to12 < SX1302_SW_AUTO) || (sf7to12 > 255) ||
++        (service < SX1302_SW_AUTO) || (service > 255)) {
++        return LGW_REG_ERROR;
+     }
++    sw_api_sf5     = sf5;
++    sw_api_sf6     = sf6;
++    sw_api_sf7to12 = sf7to12;
++    sw_api_service = service;
++    return LGW_REG_SUCCESS;
++}
++
++/* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
++
++int sx1302_lora_syncword(bool public, uint8_t lora_service_sf) {
++    int err = LGW_REG_SUCCESS;
++    int sf5     = SX1302_SW_AUTO;
++    int sf6     = SX1302_SW_AUTO;
++    int sf7to12 = SX1302_SW_AUTO;
++    int service = SX1302_SW_AUTO;
++
++    sw_load(&sf5, &sf6, &sf7to12, &service);
++
++    /* Resolve "auto" to the stock behaviour, so that an absent or all-auto
++       conf file reproduces the upstream register writes exactly. */
++    if (sf5     == SX1302_SW_AUTO) sf5     = 0x12; /* SF5/SF6 are always private upstream */
++    if (sf6     == SX1302_SW_AUTO) sf6     = 0x12;
++    if (sf7to12 == SX1302_SW_AUTO) sf7to12 = (public == true) ? 0x34 : 0x12;
++    if (service == SX1302_SW_AUTO) {
++        service = ((public == false) || (lora_service_sf == DR_LORA_SF5) || (lora_service_sf == DR_LORA_SF6)) ? 0x12 : 0x34;
++    }
++
++    /* Multi-SF modem configuration (all 8 IF channels) */
++    printf("INFO: [syncword] LoRa Multi-SF  SF5     : 0x%02X\n", (uint8_t)sf5);
++    err |= lgw_reg_w(SX1302_REG_RX_TOP_FRAME_SYNCH0_SF5_PEAK1_POS_SF5, SW_PEAK1(sf5));
++    err |= lgw_reg_w(SX1302_REG_RX_TOP_FRAME_SYNCH1_SF5_PEAK2_POS_SF5, SW_PEAK2(sf5));
++
++    printf("INFO: [syncword] LoRa Multi-SF  SF6     : 0x%02X\n", (uint8_t)sf6);
++    err |= lgw_reg_w(SX1302_REG_RX_TOP_FRAME_SYNCH0_SF6_PEAK1_POS_SF6, SW_PEAK1(sf6));
++    err |= lgw_reg_w(SX1302_REG_RX_TOP_FRAME_SYNCH1_SF6_PEAK2_POS_SF6, SW_PEAK2(sf6));
++
++    printf("INFO: [syncword] LoRa Multi-SF  SF7-SF12: 0x%02X\n", (uint8_t)sf7to12);
++    err |= lgw_reg_w(SX1302_REG_RX_TOP_FRAME_SYNCH0_SF7TO12_PEAK1_POS_SF7TO12, SW_PEAK1(sf7to12));
++    err |= lgw_reg_w(SX1302_REG_RX_TOP_FRAME_SYNCH1_SF7TO12_PEAK2_POS_SF7TO12, SW_PEAK2(sf7to12));
++
++    /* LoRa Service modem configuration (chan_Lora_std, independent) */
++    printf("INFO: [syncword] LoRa Service   SF%-2u    : 0x%02X\n", lora_service_sf, (uint8_t)service);
++    err |= lgw_reg_w(SX1302_REG_RX_TOP_LORA_SERVICE_FSK_FRAME_SYNCH0_PEAK1_POS, SW_PEAK1(service));
++    err |= lgw_reg_w(SX1302_REG_RX_TOP_LORA_SERVICE_FSK_FRAME_SYNCH1_PEAK2_POS, SW_PEAK2(service));
+ 
+     return err;
+ }

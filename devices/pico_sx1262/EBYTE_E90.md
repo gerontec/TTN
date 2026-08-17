@@ -35,12 +35,28 @@ als Kriterium nimmt.
 
 | Gerät | Syncword | Register `0x0740` | Status |
 |---|---|---|---|
-| E90-DTU(400SL30)E | **0x58** | `54 84` | Empfang verifiziert |
-| E90-DTU(900SL33) | **0x58** | `54 84` | Empfang verifiziert |
+| E90-DTU(400SL30)E | **0x55** | `54 54` | Empfang verifiziert |
+| E90-DTU(900SL33) | **0x55** | `54 54` | Empfang verifiziert |
+| E22-900T (USB) | **0x55** | `54 54` | am SX1302 ausgemessen, 17.08.2026 |
 
 **Der Wert ist bei beiden Familien derselbe** — 400 MHz wie 868 MHz, zwei
-verschiedene Gehäuse, zwei verschiedene Konfigurationsprotokolle. `0x58` ist
+verschiedene Gehäuse, zwei verschiedene Konfigurationsprotokolle. `0x55` ist
 damit als Ebyte-Werkswert anzusehen und nicht als Eigenschaft eines Modells.
+
+> **Korrektur 17.08.2026: 0x58 → 0x55.** Hier stand vorher 0x58. Das war nur
+> das *obere* Nibble: ein SX126x-Empfänger wertet allein das erste
+> Syncword-Registerbyte `0x54` aus, weshalb der Sweep unten auf allen acht
+> Werten 0x58–0x5F traf und 0x58 stellvertretend notiert wurde. Das untere
+> Nibble blieb damit offen.
+>
+> Der SX1302 im DLOS8N prüft **beide** Peak-Positionen streng und konnte es
+> deshalb auflösen: ein Live-Sweep von `peak2` über `/dev/spidev1.0` bei
+> laufendem Forwarder (`gateway/sx1302_syncword/sx1302_poke.c`) lieferte Pakete
+> ausschließlich bei `peak2 = 10`, also **0x55**. Gegenprobe: bei 0x58
+> (`peak2 = 16`) empfängt das Gateway nichts.
+>
+> Für den Pico ändert das nichts — er hört mit 0x58 wie mit 0x55, weil er das
+> zweite Byte ohnehin ignoriert. Für jeden SX1302-Empfänger ändert es alles.
 
 Weder `0x12` (privat) noch `0x34` (öffentlich) trifft zu — die naheliegende
 Annahme ist falsch, und beide wurden gemessen ausgeschlossen.
@@ -185,7 +201,9 @@ danach auch auf den Header ein; SF6/BW250 und SF5/BW125 empfangen nichts.
 
 **3. Welches Syncword?** Absuchen von `0x00`–`0x7F` bei SF7/BW500, je 1 s, mit
 `HeaderValid` als Kriterium. Treffer bei **0x58–0x5F** — alle acht schreiben
-dasselbe erste Registerbyte `0x54`, ausgewertet wird also nur dieses.
+dasselbe erste Registerbyte `0x54`, ausgewertet wird also nur dieses. Welcher
+der acht Werte gesendet wird, lässt sich am SX126x deshalb **nicht** bestimmen;
+das klärte erst der SX1302: **0x55** (siehe Korrektur oben).
 
 **4. Warum trotzdem CRC-Fehler?** Siehe Fallen.
 

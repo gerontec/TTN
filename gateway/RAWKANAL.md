@@ -34,16 +34,37 @@ Klartext auf der Luft**, nur der MIC schützt sie gegen Manipulation.
 
 ## Die drei Hürden
 
-**1. Das Syncword gilt chipweit, nicht pro Kanal.** `global_conf.json` hat
-`"lorawan_public": true` → Syncword **0x34**. Es gibt keinen Parameter pro
-Kanal; belegt durch `cfg/Readme_conf.json` (dokumentiert nur die eine Option)
-und durch die Strings im `fwd`-Binary (genau ein `lorawan_public`, einmal beim
-Start geloggt). Auf `false` zu gehen bedeutet 0x12 für **alle 10 Kanäle** und
-damit das Ende des LoRaWAN-Betriebs.
+**1. Das Syncword — chipweit stimmt nur für die 8 MultiSF-Kanäle.**
+`global_conf.json` hat `"lorawan_public": true` → Syncword **0x34**, und einen
+Parameter pro Kanal gibt es tatsächlich nicht.
 
-→ Konsequenz: der **Node** muss sich anpassen, nicht das Gateway. Die
-TrackerD-P2P-Firmware stand auf dem privaten `0x12` und wurde auf `0x34`
-umgestellt (`devices/trackerd_p2p/p2p/src/main.cpp`, `cfgSync`).
+**Diese Hürde ist seit dem 17.08.2026 aber nur noch eine halbe.** Der SX1302
+hat nicht ein Syncword-Register, sondern **vier**, und eines davon gehört
+allein dem Rohkanal:
+
+| Registerpaar | Adressen | gilt für |
+|---|---|---|
+| `SF5_PEAK1/2` | `0x588A/0x588B` | alle 8 MultiSF-Kanäle, nur SF5 |
+| `SF6_PEAK1/2` | `0x588C/0x588D` | alle 8 MultiSF-Kanäle, nur SF6 |
+| `SF7TO12_PEAK1/2` | `0x588E/0x588F` | alle 8 MultiSF-Kanäle, SF7–12 |
+| `LORA_SERVICE_PEAK1/2` | `0x5B2E/0x5B2F` | **nur `chan_Lora_std`** |
+
+Die 8 MultiSF-Kanäle teilen sich einen Demodulator-Block, dessen Syncword nur
+nach Spreizfaktor aufgeteilt ist — *einer* von diesen 8 kann also weiterhin
+kein eigenes Syncword bekommen, das ist eine Eigenschaft des Chips.
+`chan_Lora_std` kann es sehr wohl. Nur schreibt der HAL dort stur 0x12 oder
+0x34, abgeleitet aus `lorawan_public`.
+
+`sx1302_syncword/` macht dieses Register zugänglich: ein `LD_PRELOAD`-Shim
+ersetzt genau eine HAL-Funktion und liest die Werte aus
+`/etc/lora/syncword.conf`. Damit läuft der Rohkanal auf einem **beliebigen**
+Syncword 0x00–0xFF, während die 8 LoRaWAN-Kanäle unangetastet auf 0x34 bleiben
+— gleichzeitig, ohne Umschalten. Details und Messungen dort im README.
+
+→ Konsequenz **neu**: der Node muss sich *nicht* mehr anpassen. Die
+Umstellung der TrackerD-P2P-Firmware von `0x12` auf `0x34`
+(`devices/trackerd_p2p/p2p/src/main.cpp`, `cfgSync`) war unter der alten
+Annahme nötig und kann zurückgenommen werden.
 
 **2. CRC.** Pakete ohne CRC verwirft der Forwarder, solange
 `forward_crc_disabled` false ist. Der Rohkanal-Server hat das Flag auf `true`,
@@ -218,6 +239,36 @@ AT+SEND=hallo
   PUSH_ACK `02abcd01` korrekt, Paket geparst, gefiltert, ausgegeben als
   `868.125 MHz SF7BW125 ch8 RSSI -77 SNR 9.2 CRC ok 16B 545241…` mit
   Klartext `"TRACKERD-TEST 42"`, und auf `lora/raw` veröffentlicht.
+
+### Ergänzung 17.08.2026 — eigenes Syncword auf dem Rohkanal
+
+- **Rohkanal mit eigenem Syncword**: `chan_Lora_std` auf **0x55**, die 8
+  MultiSF-Kanäle gleichzeitig weiter auf **0x34**. Beim Start meldet der
+  Forwarder `[syncword] multi-SF ch0-7: SF5=0x12 SF6=0x12 SF7-12=0x34 |
+  Lora_std (SF11): 0x55`. Registerkontrolle im laufenden Betrieb mit
+  `sx1302_poke`: `0x5B2E = 0x0A`, `0x5B2F = 0x0A`.
+- **Ebyte E22 empfangen**: E22-900T (USB, Werkskonfig 2.4k = SF11/BW500,
+  Kanal 18 = 868.125 MHz) am Regeldienst empfangen — `chan 8`, `SF11BW500`,
+  RSSI −63 dBm, `stat:1`. Nutzlast nach XOR 0x12 exakt `PROD-03`.
+  Rahmenformat: `2C 12 <2B lfd> 00 FF FF <len> | Nutzlast XOR 0x12`, wobei
+  Byte 1 die Kanalnummer *und* zugleich der XOR-Schlüssel ist.
+- **LDRO muss erzwungen werden**: der HAL leitet es aus
+  `SET_PPM_ON(bw, dr)` ab, das bei **BW500 nie** greift; Ebyte sendet aber mit
+  LDRO 1. Ohne Override rastet der Header ein und jede Nutzlast käme mit
+  CRC-Fehler. Der Shim setzt `0x5B22` Bits 4–5 auf 1 (`ldro = 1` in
+  `syncword.conf`), kontrolliert als `0x5B22 = 0x98`.
+- **LoRaWAN unverändert funktionsfähig** (Regressionstest mit LA66-USB,
+  EU868 v1.3, DevEUI `A840 4117 F189 62E0`, bereits gejoint): Uplink auf
+  868.500 MHz DR0 kommt auf `chan 2` an, `SF12BW125`, RSSI −85, `stat:1`.
+  Frame sauber: MHDR `0x40` Unconfirmed Data Up, DevAddr `0x018962E0`,
+  FCnt 0, FPort 2, Nutzlast `LORAWN`. Der Eingriff berührt die LoRaWAN-Kette
+  also nachweislich nicht.
+- **Zeitmultiplex geprüft und verworfen**: eine Syncword-Umschaltung des
+  MultiSF-Paares kostet gemessene 295 µs, hin und zurück 590 µs — schnell
+  genug gegenüber dem SF7-Sync-Fenster von 2050 µs. Es scheitert trotzdem,
+  weil es **keinen Trigger** gibt: die Paketerkennung *ist* der
+  Syncword-Vergleich. Blindes Duty-Cycling wäre ein Nullsummenspiel und ist
+  gegenüber dem eigenen Register des Service-Modems immer schlechter.
 
 **Noch nicht verifiziert**, weil der TrackerD gerade nicht angesteckt ist
 (`/dev/ttyACM0` fehlt): der Funkweg über den neuen Kanal 868.125 mit der
