@@ -156,6 +156,72 @@ class TestMqttAusgabe(unittest.TestCase):
             self.assertIsNotNone(raus[0]["absender"], roh)
 
 
+class TestGeraeteerkennung(unittest.TestCase):
+    """Aus der Kennung muss sich das Geraet benennen lassen."""
+
+    def _einmal(self, roh, **kw):
+        mq = _FakeMq()
+        lr.handle_rxpk(_rxpk(roh), _args(**kw), mq)
+        return mq.gesendet
+
+    def test_ebyte_werksadresse(self):
+        self.assertEqual(lr.geraet_zu("FFFF"), lr.GERAETE["FFFF"])
+
+    def test_kennung_gross_klein_egal(self):
+        self.assertEqual(lr.geraet_zu("e09c"), lr.geraet_zu("E09C"))
+
+    def test_unbekannt_gibt_none(self):
+        self.assertIsNone(lr.geraet_zu("ABCD"))
+        self.assertIsNone(lr.geraet_zu(None))
+
+    def test_geraet_steht_im_mqtt(self):
+        raus = self._einmal(E22_E90X0)
+        self.assertEqual(raus[0]["absender"], "FFFF")
+        self.assertEqual(raus[0]["geraet"], lr.GERAETE["FFFF"])
+
+    def test_bekannter_textabsender(self):
+        raus = self._einmal(b"0C2B>hallo")
+        self.assertEqual(raus[0]["geraet"], lr.GERAETE["0C2B"])
+
+    def test_unbekannter_absender_bleibt_sichtbar(self):
+        """Unbekannt heisst nicht unsichtbar -- die Kennung steht trotzdem da."""
+        raus = self._einmal(b"AB99>fremd")
+        self.assertEqual(raus[0]["absender"], "AB99")
+        self.assertIsNone(raus[0]["geraet"])
+
+
+class TestSelbstempfang(unittest.TestCase):
+    """Gleiche Kennung sagt nur, dass es von uns stammt. Ob es ueber ein
+    Relais kam, verraet erst der Frequenzversatz."""
+
+    def _einmal(self, roh, foff, **kw):
+        mq = _FakeMq()
+        p = _rxpk(roh)
+        p["foff"] = foff
+        lr.handle_rxpk(p, _args(**kw), mq)
+        return mq.gesendet
+
+    def test_kleiner_versatz_ist_selbstempfang(self):
+        eigen = lr.ebyte_rahmen(b"x", "E09C")
+        raus = self._einmal(eigen, -59, self_filter=False)
+        self.assertTrue(raus[0]["selbstempfang"])
+
+    def test_grosser_versatz_ist_weitergabe(self):
+        eigen = lr.ebyte_rahmen(b"x", "E09C")
+        raus = self._einmal(eigen, -27673, self_filter=False)
+        self.assertFalse(raus[0]["selbstempfang"])
+
+    def test_fremdes_ist_nie_selbstempfang(self):
+        fremd = lr.ebyte_rahmen(b"x", "0C2B")
+        self.assertFalse(self._einmal(fremd, -20)[0]["selbstempfang"])
+
+    def test_ohne_foff_keine_aussage(self):
+        mq = _FakeMq()
+        eigen = lr.ebyte_rahmen(b"x", "E09C")
+        lr.handle_rxpk(_rxpk(eigen), _args(self_filter=False), mq)
+        self.assertFalse(mq.gesendet[0]["selbstempfang"])
+
+
 class TestSelbstfilter(unittest.TestCase):
 
     def _einmal(self, roh, **kw):

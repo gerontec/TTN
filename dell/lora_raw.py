@@ -59,6 +59,38 @@ EBYTE_KANAL = 18            # 850.125 + 18 = 868.125 MHz, Werksdefault der 900er
 EBYTE_NETID = 0x00          # muss geraeteweit gleich sein, sonst leitet der
                             # E90-Repeater gemessen nicht weiter
 
+# --- Geraeteerkennung -----------------------------------------------------
+# Jede Station traegt ihre Kennung im Rahmen: Ebyte in der Adresse Byte 5-6,
+# Text als vier Hexstellen vor dem ">". Beide sind vier Hexstellen, also
+# dieselbe Tabelle. Ueberschreibbar durch /etc/lora/geraete.json, damit neue
+# Knoten ohne Codeaenderung dazukommen.
+GERAETE_DATEI = "/etc/lora/geraete.json"
+GERAETE = {
+    "E09C": "dell-3660 (aus der MAC cc:96:e5:01:e0:9c)",
+    "0C2B": "Pico Brauneck (Waveshare SX1262)",
+    "FFFF": "Ebyte Werksadresse / Monitor",
+    "0000": "E90-DTU(900SL33)",
+    "076C": "TrackerD",
+}
+# Selbstempfang: das Gateway hoert die eigene Aussendung. Gemessen -16 dBm bei
+# nur -59 Hz Versatz -- derselbe Oszillator. Eine Weitergabe traegt den
+# Quarzversatz der Gegenstelle, ein Ebyte-Modul rund -27 kHz.
+SELBST_FOFF_HZ = 300
+
+
+def geraete_laden():
+    try:
+        with open(GERAETE_DATEI) as f:
+            GERAETE.update({k.upper(): v for k, v in json.load(f).items()})
+    except (OSError, ValueError):
+        pass
+    return GERAETE
+
+
+def geraet_zu(kennung):
+    """Klarname zur Kennung, oder None wenn unbekannt."""
+    return GERAETE.get(kennung.upper()) if kennung else None
+
 
 def eigene_kennung():
     """Letzte vier Hexstellen der MAC. Ohne Vergabeliste eindeutig und von
@@ -198,11 +230,17 @@ def handle_rxpk(pkt, args, mq):
     # die Absenderkennung mit -- Text als vier Hexstellen vor dem ">", Ebyte
     # als Adresse in Byte 5-6. Ohne diesen Filter wuerde jede Bruecke von
     # MQTT zurueck auf den Steuereingang eine Endlosschleife erzeugen.
-    if args.self_filter and absender and absender.upper() == args.id.upper():
+    eigen = bool(absender) and absender.upper() == args.id.upper()
+    foff = pkt.get("foff")
+    # Selbstempfang von Weitergabe trennen: gleiche Kennung sagt nur, dass es
+    # von uns stammt -- ob es ueber ein Relais kam, verraet erst der Versatz.
+    selbst = eigen and foff is not None and abs(foff) < SELBST_FOFF_HZ
+    if args.self_filter and eigen:
         quelle = absender
-        log.info("%.3f MHz  %-9s RSSI %-5s eigenes Echo von %s%s, %d B "
-                 "-- gefiltert (Relais bestaetigt)",
-                 freq, pkt.get("datr", "?"), pkt.get("rssi", "?"), quelle,
+        log.info("%.3f MHz  %-9s RSSI %-5s %s von %s%s, %d B -- gefiltert",
+                 freq, pkt.get("datr", "?"), pkt.get("rssi", "?"),
+                 "Selbstempfang (foff %s Hz)" % foff if selbst
+                 else "Echo ueber ein Relais", quelle,
                  "/%d" % sprung if sprung else "", len(nutz))
         return
     txt = printable(nutz)
@@ -217,7 +255,13 @@ def handle_rxpk(pkt, args, mq):
         mq.publish(MQTT_TOPIC, json.dumps({
             "freq": freq, "datr": pkt.get("datr"), "chan": pkt.get("chan"),
             "rssi": pkt.get("rssi"), "snr": pkt.get("lsnr"), "crc": stat,
-            "absender": absender, "sprung": sprung, "format": formt,
+            # Der Frequenzversatz unterscheidet zwei Sender desselben Inhalts:
+            # ein Ebyte-Modul liegt gemessen ~27 kHz daneben, das Gateway und
+            # ein SX1262 nur wenige hundert Hertz. Damit laesst sich eine
+            # Weitergabe vom Original trennen -- und Selbstempfang erkennen.
+            "foff": pkt.get("foff"),
+            "absender": absender, "geraet": geraet_zu(absender),
+            "sprung": sprung, "format": formt, "selbstempfang": selbst,
             "raw": raw.hex(), "text": txt, "t": time.time()}), qos=0)
 
 
@@ -278,6 +322,7 @@ def main():
     ctrl.bind(("127.0.0.1", args.ctrl_port))
     log.info("Steuereingang auf 127.0.0.1:%d", args.ctrl_port)
 
+    geraete_laden()
     log.info("eigene Kennung %s (aus der MAC), Selbstfilter %s, senden %s",
              args.id, "an" if args.self_filter else "AUS",
              "als Ebyte-Rahmen" if args.ebyte else "ungerahmt")
