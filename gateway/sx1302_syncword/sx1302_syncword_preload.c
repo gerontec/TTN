@@ -101,10 +101,25 @@ extern int lgw_com_rmw(uint8_t spi_mux_target, uint16_t address, uint8_t offs, u
 
 #define FREQ_FENSTER_HZ         5000        /* +/- 5 kHz around tx_freq */
 
+/*
+ * TX LDRO. sx1302_send() derives it from the same SET_PPM_ON(bw, dr) rule as
+ * the receive path, so a BW500 downlink always goes out with LDRO = 0 while
+ * Ebyte peers transmit and expect 1. Measured: a gateway downlink reached the
+ * node at -105 dBm but only decoded with the receiver forced to LDRO 0 --
+ * header locks, payload fails, the same trap as on the RX side.
+ *
+ * Offset 4, length 2, so this write also goes through lgw_com_rmw().
+ */
+#define REG_TX_A_LDRO           0x5261      /* TX_TOP_A base 0x5200 + 97 */
+#define REG_TX_B_LDRO           0x5461      /* TX_TOP_B base 0x5400 + 97 */
+#define TX_LDRO_OFFS            4
+#define TX_LDRO_LENG            2
+
 static int (*real_com_rmw)(uint8_t, uint16_t, uint8_t, uint8_t, uint8_t) = NULL;
 static int (*real_com_w)(uint8_t, uint16_t, uint8_t) = NULL;
 static int sw_tx = -1;                      /* -1 = leave the HAL's value alone */
 static long sw_tx_freq = -1;                /* -1 = apply to every downlink */
+static int sw_tx_ldro = -1;                 /* -1 = leave the HAL's value alone */
 
 /* letzte je Kette geschriebene Frequenz, Index 0 = TX_TOP_A, 1 = TX_TOP_B */
 static uint32_t tx_freq_reg[2] = { 0, 0 };
@@ -210,6 +225,7 @@ struct syncword_set {
     int service;
     int ldro;       /* LoRa Service modem LDRO: SW_AUTO, 0 or 1 */
     int tx;         /* transmit sync word, SW_AUTO = stock */
+    int tx_ldro;    /* LDRO fuer Downlinks, SW_AUTO = HAL-Regel */
     long tx_freq;   /* nur Downlinks auf dieser Frequenz, -1 = alle */
 };
 
@@ -230,6 +246,7 @@ static void parse_line(char * line, struct syncword_set * sw) {
     else if (strcmp(key, "service") == 0) target = &sw->service;
     else if (strcmp(key, "ldro")    == 0) target = &sw->ldro;
     else if (strcmp(key, "tx")      == 0) target = &sw->tx;
+    else if (strcmp(key, "tx_ldro") == 0) target = &sw->tx_ldro;
     else if (strcmp(key, "tx_freq") == 0) {
         if (strcmp(val, "auto") == 0) {
             sw->tx_freq = -1;
@@ -253,7 +270,8 @@ static void parse_line(char * line, struct syncword_set * sw) {
 
     errno = 0;
     parsed = strtol(val, &end, 0); /* base 0 -> accepts 0x.. and decimal */
-    if ((target == &sw->ldro) && (parsed >= 0) && (parsed <= 1) &&
+    if (((target == &sw->ldro) || (target == &sw->tx_ldro))
+        && (parsed >= 0) && (parsed <= 1) &&
         (errno == 0) && (end != val) && (*end == '\0')) {
         *target = (int)parsed;
         return;
@@ -341,6 +359,13 @@ int lgw_com_rmw(uint8_t spi_mux_target, uint16_t address, uint8_t offs, uint8_t 
             default: break;
         }
     }
+    if (sw_tx_ldro >= 0) {
+        if ((address == REG_TX_A_LDRO) && tx_gilt_fuer(0)) {
+            data = (uint8_t)sw_tx_ldro;
+        } else if ((address == REG_TX_B_LDRO) && tx_gilt_fuer(1)) {
+            data = (uint8_t)sw_tx_ldro;
+        }
+    }
     return call_real_rmw(spi_mux_target, address, offs, leng, data);
 }
 
@@ -349,7 +374,7 @@ int lgw_com_rmw(uint8_t spi_mux_target, uint16_t address, uint8_t offs, uint8_t 
  * ABI of libsx1302hal.so is untouched -- no struct crosses this boundary.
  */
 int sx1302_lora_syncword(bool public, uint8_t lora_service_sf) {
-    struct syncword_set sw = { SW_AUTO, SW_AUTO, SW_AUTO, SW_AUTO, SW_AUTO, SW_AUTO, -1 };
+    struct syncword_set sw = { SW_AUTO, SW_AUTO, SW_AUTO, SW_AUTO, SW_AUTO, SW_AUTO, SW_AUTO, -1 };
     int err = 0;
 
     load_conf(&sw);
@@ -376,6 +401,11 @@ int sx1302_lora_syncword(bool public, uint8_t lora_service_sf) {
 
     sw_tx = sw.tx;              /* aktiviert die Umschreibung in lgw_com_rmw() */
     sw_tx_freq = sw.tx_freq;
+    sw_tx_ldro = sw.tx_ldro;
+    if (sw_tx_ldro >= 0) {
+        printf("INFO: [syncword] TX LDRO forced to %d%s\n", sw_tx_ldro,
+               (sw_tx_freq >= 0) ? " (nur auf der gefilterten Frequenz)" : " fuer JEDEN Downlink");
+    }
     if (sw_tx >= 0) {
         if (sw_tx_freq >= 0) {
             printf("INFO: [syncword] TX sync word 0x%02X, nur fuer Downlinks auf %ld Hz (+/- %d Hz)\n",
