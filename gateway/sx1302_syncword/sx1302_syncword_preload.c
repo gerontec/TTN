@@ -40,6 +40,7 @@
  * Deploy: see README.md
  */
 
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -47,9 +48,44 @@
 #include <stdbool.h>
 #include <errno.h>
 #include <time.h>
+#include <dlfcn.h>
 
 /* Provided by the already-loaded libsx1302hal.so */
 extern int lgw_com_rmw(uint8_t spi_mux_target, uint16_t address, uint8_t offs, uint8_t leng, uint8_t data);
+
+/*
+ * TX sync word.
+ *
+ * sx1302_send() rewrites the transmit sync word for EVERY packet, immediately
+ * before keying the PA, derived from lorawan_public -- so a downlink always
+ * goes out as 0x12 or 0x34 no matter what the RX side is set to. A peer on a
+ * different sync word (an Ebyte repeater on 0x55, say) would never hear the
+ * gateway.
+ *
+ * Interposing sx1302_send() itself is not an option: its signature carries
+ * struct pointers, so it would tie us to Dragino's struct layout. Instead we
+ * interpose lgw_com_rmw() -- the register write goes through it, because the
+ * peak position fields are 5 bits at offset 0 and therefore a read-modify-write
+ * -- and substitute the value only for the four TX FRAME_SYNCH addresses.
+ * Address-based again, so no ABI coupling.
+ */
+#define REG_TX_A_PEAK1          0x526D      /* TX_TOP_A base 0x5200 + 109 */
+#define REG_TX_A_PEAK2          0x526E
+#define REG_TX_B_PEAK1          0x546D      /* TX_TOP_B base 0x5400 + 109 */
+#define REG_TX_B_PEAK2          0x546E
+
+static int (*real_com_rmw)(uint8_t, uint16_t, uint8_t, uint8_t, uint8_t) = NULL;
+static int sw_tx = -1;                      /* -1 = leave the HAL's value alone */
+
+static int call_real_rmw(uint8_t mux, uint16_t addr, uint8_t offs, uint8_t leng, uint8_t data) {
+    if (real_com_rmw == NULL) {
+        real_com_rmw = dlsym(RTLD_NEXT, "lgw_com_rmw");
+        if (real_com_rmw == NULL) {
+            return -1;
+        }
+    }
+    return real_com_rmw(mux, addr, offs, leng, data);
+}
 
 #define SPI_MUX_TARGET_SX1302   0x00
 
@@ -96,6 +132,7 @@ struct syncword_set {
     int sf7to12;
     int service;
     int ldro;       /* LoRa Service modem LDRO: SW_AUTO, 0 or 1 */
+    int tx;         /* transmit sync word, SW_AUTO = stock */
 };
 
 static void parse_line(char * line, struct syncword_set * sw) {
@@ -114,6 +151,7 @@ static void parse_line(char * line, struct syncword_set * sw) {
     else if (strcmp(key, "sf7to12") == 0) target = &sw->sf7to12;
     else if (strcmp(key, "service") == 0) target = &sw->service;
     else if (strcmp(key, "ldro")    == 0) target = &sw->ldro;
+    else if (strcmp(key, "tx")      == 0) target = &sw->tx;
     else return;
 
     if (strcmp(val, "auto") == 0) {
@@ -156,8 +194,8 @@ static void load_conf(struct syncword_set * sw) {
 
 static int write_pair(uint16_t reg1, uint16_t reg2, int sw) {
     int err = 0;
-    err |= lgw_com_rmw(SPI_MUX_TARGET_SX1302, reg1, PEAK_FIELD_OFFS, PEAK_FIELD_LENG, PEAK1(sw));
-    err |= lgw_com_rmw(SPI_MUX_TARGET_SX1302, reg2, PEAK_FIELD_OFFS, PEAK_FIELD_LENG, PEAK2(sw));
+    err |= call_real_rmw(SPI_MUX_TARGET_SX1302, reg1, PEAK_FIELD_OFFS, PEAK_FIELD_LENG, PEAK1(sw));
+    err |= call_real_rmw(SPI_MUX_TARGET_SX1302, reg2, PEAK_FIELD_OFFS, PEAK_FIELD_LENG, PEAK2(sw));
     return err;
 }
 
@@ -198,11 +236,33 @@ static void bench_switch(int sw) {
 }
 
 /*
+ * Interposed register write. Everything passes through unchanged except the
+ * four TX FRAME_SYNCH peak positions, which carry the transmit sync word.
+ */
+int lgw_com_rmw(uint8_t spi_mux_target, uint16_t address, uint8_t offs, uint8_t leng, uint8_t data) {
+    if (sw_tx >= 0) {
+        switch (address) {
+            case REG_TX_A_PEAK1:
+            case REG_TX_B_PEAK1:
+                data = PEAK1(sw_tx);
+                break;
+            case REG_TX_A_PEAK2:
+            case REG_TX_B_PEAK2:
+                data = PEAK2(sw_tx);
+                break;
+            default:
+                break;
+        }
+    }
+    return call_real_rmw(spi_mux_target, address, offs, leng, data);
+}
+
+/*
  * Interposed HAL entry point. Signature is identical to the original, so the
  * ABI of libsx1302hal.so is untouched -- no struct crosses this boundary.
  */
 int sx1302_lora_syncword(bool public, uint8_t lora_service_sf) {
-    struct syncword_set sw = { SW_AUTO, SW_AUTO, SW_AUTO, SW_AUTO, SW_AUTO };
+    struct syncword_set sw = { SW_AUTO, SW_AUTO, SW_AUTO, SW_AUTO, SW_AUTO, SW_AUTO };
     int err = 0;
 
     load_conf(&sw);
@@ -222,9 +282,14 @@ int sx1302_lora_syncword(bool public, uint8_t lora_service_sf) {
     err |= write_pair(REG_SERVICE_PEAK1, REG_SERVICE_PEAK2, sw.service);
 
     if (sw.ldro != SW_AUTO) {
-        err |= lgw_com_rmw(SPI_MUX_TARGET_SX1302, REG_SERVICE_PPM_OFFSET,
-                           LDRO_FIELD_OFFS, LDRO_FIELD_LENG, (uint8_t)sw.ldro);
+        err |= call_real_rmw(SPI_MUX_TARGET_SX1302, REG_SERVICE_PPM_OFFSET,
+                             LDRO_FIELD_OFFS, LDRO_FIELD_LENG, (uint8_t)sw.ldro);
         printf("INFO: [syncword] LoRa Service LDRO forced to %d (HAL rule overridden)\n", sw.ldro);
+    }
+
+    sw_tx = sw.tx;      /* aktiviert die Umschreibung in lgw_com_rmw() */
+    if (sw_tx >= 0) {
+        printf("INFO: [syncword] TX sync word forced to 0x%02X for every downlink\n", (uint8_t)sw_tx);
     }
 
     bench_switch(sw.sf7to12);

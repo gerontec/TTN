@@ -80,14 +80,24 @@ ebenfalls ins Leere. Die vollständige Registerliste eines E90/E22 ist:
 ```
 
 **Ein Syncword-Register existiert nicht.** Das Wort kommt im Handbuch nicht
-vor. Die `0x58` sind in Ebytes Firmware festverdrahtet und für den Anwender
+vor. Die `0x55` sind in Ebytes Firmware festverdrahtet und für den Anwender
 unerreichbar — sie mussten deshalb an der Luft ausgemessen werden, siehe
 [devices/pico_sx1262/EBYTE_E90.md](devices/pico_sx1262/EBYTE_E90.md).
 
 | | Frequenz | SF / BW | **Syncword** |
 |---|---|---|---|
-| Gateway (SX1302) | frei | frei je Kanal | nur `0x34` **oder** `0x12`, chipweit |
-| Ebyte-Modul | Kanalraster | Luftrate wählbar | **fest `0x58`** |
+| Gateway (SX1302), 8 MultiSF-Kanäle | frei | frei je Kanal | `0x34` **oder** `0x12`, gemeinsam für alle 8 |
+| Gateway (SX1302), `chan_Lora_std` | frei | frei | **beliebig `0x00`–`0xFF`** |
+| Ebyte-Modul | Kanalraster | Luftrate wählbar | **fest `0x55`** |
+
+> **Korrektur 17.08.2026.** Hier stand, das Syncword gelte chipweit. Das trifft
+> nur auf die 8 MultiSF-Kanäle zu, die sich einen Demodulator-Block teilen. Der
+> LoRa-Service-Modem hinter `chan_Lora_std` hat ein **eigenes** Registerpaar
+> (`0x5B2E/0x5B2F`) und kann jedes beliebige Syncword tragen, während die 8
+> LoRaWAN-Kanäle auf 0x34 bleiben. Umgesetzt in
+> [gateway/sx1302_syncword/](gateway/sx1302_syncword/), verifiziert am
+> 17.08.2026. Der Ebyte-Werkswert ist zudem **0x55**, nicht 0x58 — 0x58 war nur
+> das obere Nibble.
 
 Spreizfaktor und Bandbreite waren also nie das Hindernis: man könnte beide
 Seiten problemlos auf SF7/BW125 bringen, sie würden sich trotzdem nicht

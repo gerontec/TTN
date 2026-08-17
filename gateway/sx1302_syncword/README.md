@@ -92,6 +92,35 @@ aber *jede* Nutzlast kommt mit CRC-Fehler — es sieht aus wie „fast richtig".
 zulässig, weil `sx1302_lora_service_modem_configure()` in `loragw_hal.c:976`
 läuft, der Hook aber erst in `:993`.
 
+## Einrichten in einem Aufruf
+
+`setup_ebyte_rawchannel.sh` läuft **auf dem Gateway** und erledigt Vorlage,
+`syncword.conf`, Wrapper, Init-Skript und Neustart. Jede angefasste Datei wird
+nach `.pre-ebyte` gesichert.
+
+```sh
+setup_ebyte_rawchannel.sh --apply      # einrichten und prüfen
+setup_ebyte_rawchannel.sh --status     # Ist-Zustand inkl. Register
+setup_ebyte_rawchannel.sh --revert     # alles zurück, Stock-Verhalten
+```
+
+Optionen: `--sync 0x55 --sf 11 --bw 500000 --if -375000 --ldro 1`.
+Voraussetzung ist ein vorheriges `make install` vom Arbeitsplatz aus.
+
+## Sendeseite
+
+`sx1302_send()` schreibt das TX-Syncword **pro Paket** neu, abgeleitet aus
+`lorawan_public` — ein Downlink ginge also immer als 0x34 hinaus. `tx = 0x55`
+in `syncword.conf` schreibt stattdessen die vier TX-Register `0x526D/0x526E`
+(TX_TOP_A) und `0x546D/0x546E` (TX_TOP_B) um, umgesetzt durch Interposition von
+`lgw_com_rmw()` — adressbasiert, also wieder ohne ABI-Bindung.
+
+**`tx` wirkt auf jeden Downlink, auch auf LoRaWAN.** Ein Gateway im
+LoRaWAN-Betrieb würde Join-Accepts und ADR auf einem Syncword senden, das kein
+Endgerät annimmt. Deshalb ist die Vorgabe `auto`. Sauber wäre eine
+Unterscheidung nach Sendefrequenz (Rohkanal 868.125 gegen RX1/RX2) — noch nicht
+umgesetzt.
+
 ## sx1302_poke — Register im laufenden Betrieb
 
 `sx1302_poke` liest und schreibt einzelne SX1302-Register über

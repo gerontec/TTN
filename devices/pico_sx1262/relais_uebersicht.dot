@@ -12,8 +12,8 @@ digraph netz {
     /* ---- der gemeinsame Aether ---- */
     kanal [label=<<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="1">
            <TR><TD><B>Gemeinsamer Kanal</B></TD></TR>
-           <TR><TD>868.125 MHz &#183; SF7 &#183; BW 125 kHz</TD></TR>
-           <TR><TD>Syncword 0x34 &#183; CRC an</TD></TR>
+           <TR><TD>868.125 MHz &#183; SF11 &#183; BW 500 kHz</TD></TR>
+           <TR><TD>Syncword <B>0x55</B> (Ebyte) &#183; CRC an</TD></TR>
            <TR><TD>25 mW ERP &#183; 1 % Sendezeit</TD></TR>
            </TABLE>>,
            shape=box, style="filled,rounded", fillcolor="#fff6d9",
@@ -22,10 +22,11 @@ digraph netz {
     /* ---- Stationen ---- */
     pico [label=<<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="1">
           <TR><TD><B>Relais Brauneck</B> ~1550 m</TD></TR>
-          <TR><TD>Pico + Waveshare SX1262</TD></TR>
-          <TR><TD>MicroPython 1.28 &#183; 48 MHz</TD></TR>
+          <TR><TD><B>Ebyte E90-DTU(900SL33)</B></TD></TR>
+          <TR><TD>Repeater + Fixpunkt, REG3 0xE3</TD></TR>
           <TR><TD>gibt jedes Paket <B>einmal</B> weiter</TD></TR>
-          <TR><TD>h&#246;chstens 3 Spr&#252;nge</TD></TR>
+          <TR><TD>filtert nach <B>Ziel</B>adresse, nicht Absender</TD></TR>
+          <TR><TD>NETID muss &#252;bereinstimmen</TD></TR>
           <TR><TD>solar, ohne Puffer</TD></TR>
           </TABLE>>,
           shape=box, style="filled,rounded", fillcolor="#fdf3e3",
@@ -48,7 +49,7 @@ digraph netz {
     trackerd [label=<<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="1">
               <TR><TD><B>TrackerD</B> im Feld</TD></TR>
               <TR><TD>P2P v1.3 in app1</TD></TR>
-              <TR><TD>Syncword 0x34 ab Werk</TD></TR>
+              <TR><TD>Syncword 0x55 &#8212; umzustellen</TD></TR>
               </TABLE>>,
               shape=box, style="filled,rounded", fillcolor="#eaf1fb", color="#1b6ec2"];
 
