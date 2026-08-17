@@ -1,5 +1,10 @@
 # Per-Kanal-Syncword für den SX1302 (Dragino DLOS8N, 10.9.0.9)
 
+> Englische Fassung für fremde Gateway-Betreiber:
+> [../SX1302_PRIVATE_SYNCWORD_EN.md](../SX1302_PRIVATE_SYNCWORD_EN.md)
+> (Markdown, direkt ins TTN-Forum einfügbar) und
+> `../SX1302_Private_Syncword_Guide_EN.pdf` als druckbare Fassung.
+
 Gibt dem Rohkanal `chan_Lora_std` ein **eigenes LoRa-Syncword**, während die
 8 LoRaWAN-Kanäle unverändert auf 0x34 bleiben — gleichzeitig, ohne Umschalten.
 
