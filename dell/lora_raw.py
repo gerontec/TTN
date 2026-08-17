@@ -65,12 +65,12 @@ EBYTE_NETID = 0x00          # muss geraeteweit gleich sein, sonst leitet der
 # dieselbe Tabelle. Ueberschreibbar durch /etc/lora/geraete.json, damit neue
 # Knoten ohne Codeaenderung dazukommen.
 GERAETE_DATEI = "/etc/lora/geraete.json"
+# Nur Stationen, die tatsaechlich in Betrieb sind. Unbekannte Kennungen
+# bleiben ohnehin sichtbar -- "geraet" ist dann null, "absender" steht da.
 GERAETE = {
     "E09C": "dell-3660 (aus der MAC cc:96:e5:01:e0:9c)",
-    "0C2B": "Pico Brauneck (Waveshare SX1262)",
     "FFFF": "Ebyte Werksadresse / Monitor",
-    "0000": "E90-DTU(900SL33)",
-    "076C": "TrackerD",
+    "0000": "E90-DTU(900SL33), Relais",
 }
 # Selbstempfang: das Gateway hoert die eigene Aussendung. Gemessen -16 dBm bei
 # nur -59 Hz Versatz -- derselbe Oszillator. Eine Weitergabe traegt den

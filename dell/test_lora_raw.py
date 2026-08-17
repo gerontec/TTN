@@ -3,7 +3,7 @@
 
 Die Funktests dieser Strecke sind reihenweise am Zustand der Hardware
 gescheitert, nicht an der Logik: der E22 stand im Konfigmodus und empfing
-nichts, der Pico war abgesteckt, der logread-Ringpuffer lief um. Was hier
+nichts, der logread-Ringpuffer lief um, ein Geraet war abgesteckt. Was hier
 geprueft wird, laesst sich dagegen jederzeit beantworten.
 
 Die Pruefsteine sind **echte Rahmen**, die am 17.08.2026 ueber die Luft
@@ -145,13 +145,13 @@ class TestMqttAusgabe(unittest.TestCase):
         self.assertEqual(self._einmal(E22_E90X0)[0]["format"], "ebyte")
 
     def test_text_absender_ist_gesetzt(self):
-        raus = self._einmal(b"0C2B>FREMD")
-        self.assertEqual(raus[0]["absender"], "0C2B")
+        raus = self._einmal(b"0000>FREMD")
+        self.assertEqual(raus[0]["absender"], "0000")
         self.assertEqual(raus[0]["format"], "text")
 
     def test_niemals_absender_null_bei_bekanntem_format(self):
         """Der Punkt, um den es geht."""
-        for roh in (E22_E90X0, E22_PROD3, b"0C2B>x", b"R1AB12>y"):
+        for roh in (E22_E90X0, E22_PROD3, b"0000>x", b"R1AB12>y"):
             raus = self._einmal(roh)
             self.assertIsNotNone(raus[0]["absender"], roh)
 
@@ -180,8 +180,8 @@ class TestGeraeteerkennung(unittest.TestCase):
         self.assertEqual(raus[0]["geraet"], lr.GERAETE["FFFF"])
 
     def test_bekannter_textabsender(self):
-        raus = self._einmal(b"0C2B>hallo")
-        self.assertEqual(raus[0]["geraet"], lr.GERAETE["0C2B"])
+        raus = self._einmal(b"0000>hallo")
+        self.assertEqual(raus[0]["geraet"], lr.GERAETE["0000"])
 
     def test_unbekannter_absender_bleibt_sichtbar(self):
         """Unbekannt heisst nicht unsichtbar -- die Kennung steht trotzdem da."""
@@ -212,7 +212,7 @@ class TestSelbstempfang(unittest.TestCase):
         self.assertFalse(raus[0]["selbstempfang"])
 
     def test_fremdes_ist_nie_selbstempfang(self):
-        fremd = lr.ebyte_rahmen(b"x", "0C2B")
+        fremd = lr.ebyte_rahmen(b"x", "0000")
         self.assertFalse(self._einmal(fremd, -20)[0]["selbstempfang"])
 
     def test_ohne_foff_keine_aussage(self):
@@ -237,7 +237,7 @@ class TestSelbstfilter(unittest.TestCase):
         self.assertEqual(self._einmal(b"R1E09C>meins"), [])
 
     def test_fremdes_geht_durch(self):
-        fremd = lr.ebyte_rahmen(b"fremd", "0C2B")
+        fremd = lr.ebyte_rahmen(b"fremd", "0000")
         self.assertEqual(len(self._einmal(fremd)), 1)
 
     def test_abschaltbar(self):
