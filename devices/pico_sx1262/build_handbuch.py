@@ -477,6 +477,107 @@ DROP_ON_SYNCH.</div>
 867.875–868.375 MHz und überlappt damit die LoRaWAN-Kanäle 868.1 und 868.3 —
 im selben Unterband zulässig, aber beim Sendezeitbudget mitzurechnen.</div>
 
+<h2 class="neu">9 Gruppenkonzept: zwei Netze, eine Brücke</h2>
+
+<p>Das Netz trennt seit dem 17.08.2026 zwei Gerätegruppen, verbunden allein
+durch den E90-DTU als Relais. Dahinter stehen <b>zwei voneinander unabhängige
+Mechanismen</b>, die sich leicht verwechseln lassen — ich habe sie beim
+Erarbeiten mehrfach vermischt.</p>
+
+<table>
+<tr><th></th><th>Feld</th><th>Quelle</th></tr>
+<tr><td><b>Adressierung</b></td><td>Kanal + Zieladresse</td><td>Handbuch T22U-Serie, 4.1/4.2</td></tr>
+<tr><td><b>Weiterleitung</b></td><td>NETID-Paar</td><td>Handbuch, 5.3 Relay Networking</td></tr>
+</table>
+
+<h3>9.1 Wie Ebyte adressiert</h3>
+<pre>00 03 | 04 | AA BB CC
+Ziel-   Ziel- Daten
+adresse kanal</pre>
+<p>Der <b>Kanal grenzt die Gruppe ab</b>, die <b>Adresse wählt ein Mitglied</b>
+darin. Bei Broadcast <code>FF FF</code> geben alle Module auf dem Kanal aus —
+eines auf einem anderen Kanal schweigt auch dann.</p>
+<div class="warn"><b>Die Adresse im Rahmen ist das Ziel, nicht der Absender.</b>
+Die eigene Adresse des Senders taucht im Paket überhaupt nicht auf. Ein
+Ebyte-Rahmen sagt also, <i>an wen</i> er geht — nie, <i>von wem</i> er kam.
+Frühere Fassungen dieses Handbuchs und von <code>dell/lora_raw.py</code>
+beschrifteten Byte 5–6 als Absender; das war falsch.</div>
+
+<h3>9.2 Warum eine Gruppe über Kanäle nicht geht</h3>
+<p>Wäre der Kanal die Gruppentrennung, kostete jede Gruppe eine eigene
+Frequenz: <code>850.125 MHz + Kanal</code>. Kanal 18 ist unsere 868.125 MHz,
+Kanal 19 wäre <b>869.125 MHz</b> — außerhalb von 868.0–868.6. Im nutzbaren
+europäischen Unterband ist für eine zweite Gruppe schlicht kein Platz.</p>
+
+<h3>9.3 Deshalb: NETID als Gruppenwähler</h3>
+<pre>Kanal 18 (868.125 MHz)      gemeinsame Funkgruppe
+Adresse 2201                Netzschlüssel, bewusst <b>kein</b> Broadcast
+   ├── NETID 00   E22, dell
+   └── NETID BB   Pico
+E90-Relais  ADDH=00 ADDL=BB   einzige Brücke, bidirektional
+Gateway                       ohne NETID, hört alle Gruppen</pre>
+<div class="merk"><b>Die Adresse muss <code>2201</code> sein und darf nicht
+<code>FFFF</code> sein.</b> Das Handbuch legt die Rangfolge fest: <i>„Network
+code filtering has lower priority than broadcast addresses. Even with differing
+network codes, broadcast data can still be received."</i> Mit Broadcast wären
+die Gruppen also durchlässig — die NETID filtert nur, solange die Adresse keine
+Broadcast-Adresse ist. Die Adresse dient hier deshalb als gemeinsamer
+Netzschlüssel, die Trennung leistet allein die NETID.</div>
+
+<h3>9.4 Die Weiterleitungsregel</h3>
+<p>Im Relaismodus sind <code>ADDH</code>/<code>ADDL</code> keine Adressen mehr,
+sondern das <b>NETID-Paar</b>: <i>„If data is received from one network, it is
+forwarded to the other network."</i> Der E90 steht auf
+<code>ADDH=00, ADDL=BB</code> und überträgt bidirektional zwischen diesen
+beiden — und nur zwischen ihnen.</p>
+<p>Er ändert dabei genau <b>ein</b> Byte:</p>
+<pre>2c 12 68 c9 <b>00</b> 22 01 03 …    Original
+2c 12 68 c9 <b>bb</b> 22 01 03 …    Weitergabe</pre>
+<p>Prüfbyte, Zieladresse, Länge und Nutzlast bleiben unangetastet — nur die
+NETID wird auf die Gegengruppe gesetzt, sonst verwürfen deren Empfänger den
+Rahmen.</p>
+<div class="warn">Vorher stand der E90 auf <code>ADDH = ADDL = 0x00</code>,
+leitete also von NETID 0 nach NETID 0 zurück. Ebyte warnt davor ausdrücklich:
+<i>„Using two or more relays with <b>identical</b> ADDH and ADDL addresses is
+not recommended, as it may cause <b>circular forwarding</b>."</i> Das erklärte
+das Echo, das der E22 auf seiner seriellen Seite sah — ein Symptom, kein
+Merkmal.</div>
+
+<h3>9.5 Nachgewiesen</h3>
+<p>Gleiche Adresse, gleicher Kanal, gleiche Modulation — nur die NETID des
+Senders verschieden:</p>
+<table>
+<tr><th>NETID des Pico</th><th>im Relaispaar?</th><th>E22 (NETID 00)</th></tr>
+<tr><td><code>BB</code></td><td>ja</td><td><b>empfangen</b>, −23 bis −40 dBm</td></tr>
+<tr><td><code>07</code></td><td>nein</td><td><b>Stille</b>, 0 von 4</td></tr>
+</table>
+<p>Beide Sperren greifen dabei zugleich: direkt, weil <code>07 ≠ 00</code> und
+die Adresse kein Broadcast ist; über das Relais, weil <code>07</code> in
+keiner Richtung seines Paares liegt.</p>
+
+<h3>9.6 Das Gateway steht außerhalb</h3>
+<p>Der Rohkanal des DLOS8N hat <b>keine NETID</b>. Sie ist ein Byte innerhalb
+der Ebyte-Nutzlast; der SX1302 demoduliert auf der LoRa-Ebene — Frequenz, SF,
+Bandbreite, Syncword — und reicht die Nutzlast unverändert weiter. Er kennt das
+Ebyte-Protokoll nicht.</p>
+<pre>netid 0x07  ziel 2201  b'FREMD-3'     am Gateway empfangen,
+                                       vom E22 zugleich verworfen</pre>
+<p>Das Gateway ist damit kein Gruppenmitglied, sondern <b>passiver
+Mithörer</b> — praktisch günstig: Die Trennung wirkt zwischen den
+Ebyte-Knoten, während die Überwachung über MQTT beide Gruppen sieht. Nur wenn
+<code>dell/lora_raw.py</code> sendet, entsteht Gruppenzugehörigkeit, und die
+steht dort als <code>EBYTE_NETID</code>.</p>
+
+<h3>9.7 Was damit nicht geht</h3>
+<p>Gezielte Einzeladressierung. Ein Rahmen an <code>2201</code> statt an den
+Rundruf kam im Test <b>nicht</b> an. Kapitel 4.1 des Handbuchs steht unter der
+Voraussetzung <i>„in fixed-point mode"</i> — die Endgeräte laufen aber
+transparent (<code>REG3 = 0x80</code>). Im Transparentmodus wertet ein Modul
+das Zielfeld nur gegen Broadcast und NETID aus. Für erlaubte Paare über
+Einzeladressen müssten die Empfänger auf Fixpunkt (<code>REG3</code> Bit 6)
+umgestellt werden — der E90 läuft ohnehin schon so, weil der Relaisbetrieb es
+voraussetzt.</p>
+
 <p class="fuss">Erzeugt aus <code>devices/pico_sx1262/</code> im Repository
 gerontec/TTN. Zeichnung: <code>relais_uebersicht.dot</code>.</p>
 </body></html>"""

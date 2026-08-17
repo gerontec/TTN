@@ -56,21 +56,32 @@ EBYTE_MAGIC = 0x2C
 EBYTE_KOPF = 8
 EBYTE_XOR = 0x12            # Weissung, konstant -- nicht die Kanalnummer
 EBYTE_KANAL = 18            # 850.125 + 18 = 868.125 MHz, Werksdefault der 900er
-EBYTE_NETID = 0x00          # muss geraeteweit gleich sein, sonst leitet der
-                            # E90-Repeater gemessen nicht weiter
+EBYTE_NETID = 0x00          # Quellgruppe. Der E90 leitet als Zwei-Wege-Relais
+                            # zwischen 0x00 und 0xBB weiter (ADDH/ADDL sind im
+                            # Relaismodus keine Adressen, sondern das
+                            # NETID-Paar). Wer nach Gruppe BB senden will,
+                            # bleibt auf 0x00 -- das Relais traegt es hinueber.
 
 # --- Geraeteerkennung -----------------------------------------------------
 # Jede Station traegt ihre Kennung im Rahmen: Ebyte in der Adresse Byte 5-6,
 # Text als vier Hexstellen vor dem ">". Beide sind vier Hexstellen, also
 # dieselbe Tabelle. Ueberschreibbar durch /etc/lora/geraete.json, damit neue
 # Knoten ohne Codeaenderung dazukommen.
+# Adressen der Knoten. Bei Ebyte-Rahmen ist das die *Ziel*adresse, beim
+# Textformat die Absenderkennung -- zwei verschiedene Dinge, dieselbe Tabelle.
 GERAETE_DATEI = "/etc/lora/geraete.json"
 # Nur Stationen, die tatsaechlich in Betrieb sind. Unbekannte Kennungen
 # bleiben ohnehin sichtbar -- "geraet" ist dann null, "absender" steht da.
 GERAETE = {
     "E09C": "dell-3660 (aus der MAC cc:96:e5:01:e0:9c)",
+    "2201": "E22-900T am Notebook (NETID 00)",
+    "0C2B": "Pico SX1262 am Notebook (Gruppe BB)",
     "FFFF": "Ebyte Werksadresse / Monitor",
-    "0000": "E90-DTU(900SL33), Relais",
+    # Im Relaismodus ist ADDH/ADDL keine Adresse mehr, sondern ein
+    # NETID-Weiterleitungspaar: 0000 heisst "von NETID 0 nach NETID 0". Der
+    # E90 taucht deshalb nie selbst als Absender auf -- er reicht die Rahmen
+    # unveraendert durch, mit der Kennung des urspruenglichen Senders.
+    "0000": "E90-DTU(900SL33), Relais (NETID-Paar 0->0)",
 }
 # Selbstempfang: das Gateway hoert die eigene Aussendung. Gemessen -16 dBm bei
 # nur -59 Hz Versatz -- derselbe Oszillator. Eine Weitergabe traegt den
@@ -149,9 +160,32 @@ def ist_ebyte(roh):
             and roh[EBYTE_KOPF - 1] == len(roh) - EBYTE_KOPF)
 
 
-def ebyte_absender(roh):
-    """Absenderadresse als vier Hexstellen, oder None wenn kein Ebyte-Rahmen."""
+def ebyte_ziel(roh):
+    """**Ziel**adresse als vier Hexstellen, oder None wenn kein Ebyte-Rahmen.
+
+    Wichtig, und lange falsch verstanden: Byte 5-6 ist die Adresse des
+    **Empfaengers**, nicht des Senders. Handbuch der T22U-Serie, 4.1
+    "Targeted launch": ein Sender auf 0x0001 schickt `00 03 | 04 | Daten` --
+    Zieladresse, Zielkanal, Nutzlast. Nur das Modul mit Adresse 0x0003 auf
+    Kanal 4 gibt etwas aus, die anderen schweigen. Die eigene Adresse des
+    Senders taucht im Paket ueberhaupt nicht auf.
+
+    Ein Ebyte-Rahmen sagt also, **an wen** er geht -- nie, von wem er kam.
+    """
     return "%02X%02X" % (roh[5], roh[6]) if ist_ebyte(roh) else None
+
+
+def ebyte_netid(roh):
+    """NETID aus Byte 4, oder None.
+
+    Seit der E90 als Zwei-Wege-Relais zwischen NETID 0x00 und 0xBB laeuft, ist
+    das der **eindeutige** Unterschied zwischen Original und Weitergabe: das
+    Relais schreibt die Ziel-NETID in den Rahmen, sonst wuerden die Empfaenger
+    der Gegengruppe ihn verwerfen. Vorher liess sich das nur aus dem
+    Quarzversatz erschliessen -- ein Indizienbeweis, der mehrfach in die Irre
+    fuehrte.
+    """
+    return roh[4] if ist_ebyte(roh) else None
 
 
 def ebyte_nutzlast(roh):
@@ -259,8 +293,10 @@ def handle_rxpk(pkt, args, mq, gesendet=None):
     # ist verweisst. Ohne das bliebe auf MQTT beides leer -- und ein Verbraucher
     # koennte nicht einmal sagen, von wem ein Paket kam.
     formt = "text" if absender else "roh"
+    ziel = None
     if ist_ebyte(raw):
-        absender = ebyte_absender(raw)
+        ziel = ebyte_ziel(raw)
+        absender = None          # Ebyte nennt den Sender nicht
         nutz = ebyte_nutzlast(raw)
         formt = "ebyte"
 
@@ -271,6 +307,9 @@ def handle_rxpk(pkt, args, mq, gesendet=None):
     # MQTT zurueck auf den Steuereingang eine Endlosschleife erzeugen.
     # Eigenes Paket: entweder traegt es unsere Kennung, oder wir haben genau
     # diesen Rahmen kurz zuvor selbst gefunkt (greift auch bei Broadcast).
+    # Eigenes Paket. Bei Textrahmen steht die Absenderkennung drin, bei
+    # Ebyte-Rahmen nicht -- dort traegt allein der Inhaltsspeicher, denn die
+    # Adresse im Rahmen ist das Ziel und sagt ueber die Herkunft nichts aus.
     eigen = bool(absender) and absender.upper() == args.id.upper()
     if gesendet is not None and gesendet.war_das_ich(raw):
         eigen = True
@@ -303,7 +342,14 @@ def handle_rxpk(pkt, args, mq, gesendet=None):
             # ein SX1262 nur wenige hundert Hertz. Damit laesst sich eine
             # Weitergabe vom Original trennen -- und Selbstempfang erkennen.
             "foff": pkt.get("foff"),
+            # Zeitstempel des Konzentrators in Mikrosekunden. Damit laesst sich
+            # der Abstand zwischen einem Original und seiner Weitergabe messen
+            # -- und damit klaeren, ob der einzelne Demodulator von
+            # chan_Lora_std beide ueberhaupt nacheinander nehmen kann.
+            "tmst": pkt.get("tmst"),
             "absender": absender, "geraet": geraet_zu(absender),
+            "ziel": ziel, "zielgeraet": geraet_zu(ziel),
+            "netid": ebyte_netid(raw),
             "sprung": sprung, "format": formt, "selbstempfang": selbst,
             "raw": raw.hex(), "text": txt, "t": time.time()}), qos=0)
 
@@ -330,9 +376,10 @@ def main():
                          "hoert mit demselben Quarz, mit dem er sendet -- "
                          "misst man an seinen Paketen foff, gleicht man den "
                          "Versatz hier aus (z.B. 868.0973 bei -27.7 kHz)")
-    ap.add_argument("--sendeadresse", default=EBYTE_BROADCAST,
-                    help="Adresse im gesendeten Ebyte-Rahmen; FFFF ist "
-                         "Broadcast, dann filtert kein Empfaenger")
+    ap.add_argument("--ziel", dest="sendeadresse", default=EBYTE_BROADCAST,
+                    help="Zieladresse im gesendeten Ebyte-Rahmen. FFFF "
+                         "adressiert die ganze Gruppe auf dem Kanal, eine "
+                         "konkrete Adresse genau einen Knoten darin")
     ap.add_argument("--no-ebyte", dest="ebyte", action="store_false",
                     help="ungerahmt senden; ein E22/E90 verwirft das, nur fuer "
                          "Gegenstellen die rohes LoRa lesen")

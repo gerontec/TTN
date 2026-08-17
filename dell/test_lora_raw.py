@@ -37,9 +37,11 @@ E22_PROD3 = bytes.fromhex("2c1287260 0ffff07 4240 5d56 3f2221".replace(" ", ""))
 class TestEbyteRahmen(unittest.TestCase):
     """Gegen echte Mitschnitte -- das ist der eigentliche Wert dieser Datei."""
 
-    def test_absender_aus_echtem_rahmen(self):
-        self.assertEqual(lr.ebyte_absender(E22_E90X0), "FFFF")
-        self.assertEqual(lr.ebyte_absender(E22_PROD3), "FFFF")
+    def test_ziel_aus_echtem_rahmen(self):
+        """Byte 5-6 ist die ZIELadresse, nicht der Absender -- T22U-Handbuch
+        4.1. FFFF heisst Broadcast an die ganze Gruppe auf dem Kanal."""
+        self.assertEqual(lr.ebyte_ziel(E22_E90X0), "FFFF")
+        self.assertEqual(lr.ebyte_ziel(E22_PROD3), "FFFF")
 
     def test_nutzlast_aus_echtem_rahmen(self):
         self.assertEqual(lr.ebyte_nutzlast(E22_E90X0), b"E90X-0")
@@ -65,9 +67,9 @@ class TestEbyteRahmen(unittest.TestCase):
         f = lr.ebyte_rahmen(b"irgendwas", "E09C")
         self.assertEqual(f[3], f[2] ^ 0xA1)
 
-    def test_eigene_adresse_landet_im_rahmen(self):
+    def test_zieladresse_landet_im_rahmen(self):
         f = lr.ebyte_rahmen(b"x", "E09C")
-        self.assertEqual(lr.ebyte_absender(f), "E09C")
+        self.assertEqual(lr.ebyte_ziel(f), "E09C")
         self.assertEqual(f[5:7], b"\xe0\x9c")
 
     def test_hin_und_zurueck(self):
@@ -79,7 +81,7 @@ class TestEbyteRahmen(unittest.TestCase):
         """Text darf nicht versehentlich als Ebyte-Rahmen gelten."""
         for roh in (b"E09C>hallo", b"C>STATUS", b",xxxxxxxTEXT",
                     b"\x2c\x12\x00", b""):
-            self.assertIsNone(lr.ebyte_absender(roh), roh)
+            self.assertIsNone(lr.ebyte_ziel(roh), roh)
 
 
 class TestTextRahmen(unittest.TestCase):
@@ -132,10 +134,14 @@ class TestMqttAusgabe(unittest.TestCase):
         lr.handle_rxpk(_rxpk(roh), _args(**kw), mq)
         return mq.gesendet
 
-    def test_ebyte_absender_ist_gesetzt(self):
+    def test_ebyte_ziel_ist_gesetzt(self):
         raus = self._einmal(E22_E90X0)
         self.assertEqual(len(raus), 1)
-        self.assertEqual(raus[0]["absender"], "FFFF")
+        self.assertEqual(raus[0]["ziel"], "FFFF")
+
+    def test_ebyte_nennt_keinen_absender(self):
+        """Ein Ebyte-Rahmen sagt nur, an wen er geht -- nie, von wem."""
+        self.assertIsNone(self._einmal(E22_E90X0)[0]["absender"])
 
     def test_ebyte_text_ist_lesbar(self):
         raus = self._einmal(E22_E90X0)
@@ -149,11 +155,12 @@ class TestMqttAusgabe(unittest.TestCase):
         self.assertEqual(raus[0]["absender"], "0000")
         self.assertEqual(raus[0]["format"], "text")
 
-    def test_niemals_absender_null_bei_bekanntem_format(self):
-        """Der Punkt, um den es geht."""
+    def test_herkunft_oder_ziel_immer_erkennbar(self):
+        """Textrahmen nennen den Absender, Ebyte-Rahmen das Ziel -- eines von
+        beiden muss immer dastehen, sonst ist das Paket nicht einzuordnen."""
         for roh in (E22_E90X0, E22_PROD3, b"0000>x", b"R1AB12>y"):
-            raus = self._einmal(roh)
-            self.assertIsNotNone(raus[0]["absender"], roh)
+            d = self._einmal(roh)[0]
+            self.assertTrue(d["absender"] or d["ziel"], roh)
 
 
 class TestGeraeteerkennung(unittest.TestCase):
@@ -174,10 +181,10 @@ class TestGeraeteerkennung(unittest.TestCase):
         self.assertIsNone(lr.geraet_zu("ABCD"))
         self.assertIsNone(lr.geraet_zu(None))
 
-    def test_geraet_steht_im_mqtt(self):
+    def test_zielgeraet_steht_im_mqtt(self):
         raus = self._einmal(E22_E90X0)
-        self.assertEqual(raus[0]["absender"], "FFFF")
-        self.assertEqual(raus[0]["geraet"], lr.GERAETE["FFFF"])
+        self.assertEqual(raus[0]["ziel"], "FFFF")
+        self.assertEqual(raus[0]["zielgeraet"], lr.GERAETE["FFFF"])
 
     def test_bekannter_textabsender(self):
         raus = self._einmal(b"0000>hallo")
@@ -202,23 +209,20 @@ class TestSelbstempfang(unittest.TestCase):
         return mq.gesendet
 
     def test_kleiner_versatz_ist_selbstempfang(self):
-        eigen = lr.ebyte_rahmen(b"x", "E09C")
-        raus = self._einmal(eigen, -59, self_filter=False)
+        raus = self._einmal(b"E09C>x", -59, self_filter=False)
         self.assertTrue(raus[0]["selbstempfang"])
 
     def test_grosser_versatz_ist_weitergabe(self):
-        eigen = lr.ebyte_rahmen(b"x", "E09C")
-        raus = self._einmal(eigen, -27673, self_filter=False)
+        raus = self._einmal(b"E09C>x", -27673, self_filter=False)
         self.assertFalse(raus[0]["selbstempfang"])
 
     def test_fremdes_ist_nie_selbstempfang(self):
-        fremd = lr.ebyte_rahmen(b"x", "0000")
+        fremd = b"0000>x"
         self.assertFalse(self._einmal(fremd, -20)[0]["selbstempfang"])
 
     def test_ohne_foff_keine_aussage(self):
         mq = _FakeMq()
-        eigen = lr.ebyte_rahmen(b"x", "E09C")
-        lr.handle_rxpk(_rxpk(eigen), _args(self_filter=False), mq)
+        lr.handle_rxpk(_rxpk(b"E09C>x"), _args(self_filter=False), mq)
         self.assertFalse(mq.gesendet[0]["selbstempfang"])
 
 
@@ -229,9 +233,15 @@ class TestSelbstfilter(unittest.TestCase):
         lr.handle_rxpk(_rxpk(roh), _args(**kw), mq)
         return mq.gesendet
 
-    def test_eigenes_echo_wird_verworfen(self):
+    def test_eigenes_ebyte_echo_braucht_den_speicher(self):
+        """Ein Ebyte-Rahmen nennt den Sender nicht -- die Adresse ist das
+        Ziel. Erkannt wird das eigene Echo deshalb am Inhalt."""
         eigen = lr.ebyte_rahmen(b"meins", "E09C")
-        self.assertEqual(self._einmal(eigen), [])
+        self.assertEqual(len(self._einmal(eigen)), 1)   # ohne Speicher: durch
+        g = lr.Gesendet(); g.merken(eigen)
+        mq = _FakeMq()
+        lr.handle_rxpk(_rxpk(eigen), _args(), mq, g)
+        self.assertEqual(mq.gesendet, [])               # mit Speicher: weg
 
     def test_eigenes_echo_mit_sprungpraefix_wird_verworfen(self):
         self.assertEqual(self._einmal(b"R1E09C>meins"), [])
@@ -241,8 +251,10 @@ class TestSelbstfilter(unittest.TestCase):
         self.assertEqual(len(self._einmal(fremd)), 1)
 
     def test_abschaltbar(self):
-        eigen = lr.ebyte_rahmen(b"meins", "E09C")
-        self.assertEqual(len(self._einmal(eigen, self_filter=False)), 1)
+        g = lr.Gesendet(); f = lr.ebyte_rahmen(b"meins", "E09C"); g.merken(f)
+        mq = _FakeMq()
+        lr.handle_rxpk(_rxpk(f), _args(self_filter=False), mq, g)
+        self.assertEqual(len(mq.gesendet), 1)
 
     def test_gross_klein_egal(self):
         self.assertEqual(self._einmal(b"R1e09c>meins"), [])
@@ -254,7 +266,7 @@ class TestBroadcastUndSendespeicher(unittest.TestCase):
 
     def test_broadcastadresse_landet_im_rahmen(self):
         f = lr.ebyte_rahmen(b"x", lr.EBYTE_BROADCAST)
-        self.assertEqual(lr.ebyte_absender(f), "FFFF")
+        self.assertEqual(lr.ebyte_ziel(f), "FFFF")
 
     def test_speicher_erkennt_eigenen_rahmen(self):
         g = lr.Gesendet()
@@ -288,6 +300,10 @@ class TestBroadcastUndSendespeicher(unittest.TestCase):
         mq = _FakeMq()
         lr.handle_rxpk(_rxpk(E22_E90X0), _args(), mq, g)
         self.assertEqual(len(mq.gesendet), 1)
+
+    def test_broadcastziel_erreicht_die_gruppe(self):
+        """FFFF adressiert alle auf dem Kanal, 4.2 des T22U-Handbuchs."""
+        self.assertEqual(lr.ebyte_ziel(lr.ebyte_rahmen(b"x", "FFFF")), "FFFF")
 
 
 class TestKanalfilter(unittest.TestCase):
