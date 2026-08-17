@@ -59,19 +59,21 @@ Ebytes Broadcast-Modus benutzen.</p>
 
 <table>
 <tr><th>Parameter</th><th>Wert</th><th>Warum</th></tr>
-<tr><td>Frequenz</td><td>868.125 MHz</td><td>Werksvorgabe der TrackerD-P2P-Firmware; liegt im Band 868.0–868.6</td></tr>
-<tr><td>Spreizfaktor</td><td>SF7</td><td>reicht: 30 dB Reserve auf 10 km Sichtverbindung</td></tr>
-<tr><td>Bandbreite</td><td>125 kHz</td><td>Standard</td></tr>
+<tr><td>Frequenz</td><td>868.125 MHz</td><td>Ebyte-Kanal 18 ab Werk (850.125 + 18); liegt im Band 868.0–868.6</td></tr>
+<tr><td>Spreizfaktor</td><td>SF11</td><td>Ebyte-Luftrate 2.4k; die Etiketten sind nominal, gemessen ist SF11</td></tr>
+<tr><td>Bandbreite</td><td><b>500 kHz</b></td><td>Die Ebyte-Leiter ist durchgehend BW500, nie BW125 — nachgemessen</td></tr>
+<tr><td>LDRO</td><td>1</td><td>Ebyte sendet mit 1; die Rechenregel käme bei SF11/BW500 auf 0 und jede Nutzlast bekäme CRC-Fehler</td></tr>
 <tr><td>Syncword</td><td><b>0x34</b> (öffentlich)</td><td>Historisch, weil der Rohkanal anfangs das Syncword der LoRaWAN-Kanäle mitbenutzen musste. Seit 17.08.2026 nicht mehr nötig — siehe Kapitel 8.</td></tr>
 <tr><td>CRC</td><td>an</td><td>sonst verwirft der Paket-Forwarder</td></tr>
 <tr><td>Leistung</td><td>bis 14 dBm ERP</td><td>25 mW ist das Limit in 868.0–868.6</td></tr>
-<tr><td>Sendezeit</td><td>1 %</td><td>bei ~72 ms Luftzeit rund 7 s Sperre je Paket</td></tr>
+<tr><td>Sendezeit</td><td>1 %</td><td>bei ~144 ms Luftzeit rund <b>14 s</b> Sperre je Paket — der eigentliche Engpass, siehe Kapitel 6</td></tr>
 </table>
 
 <div class="merk"><b>Streckenrechnung 10 km, Sichtverbindung.</b>
 14 dBm + 2 dBi = 16 dBm EIRP, minus 111 dB Freiraumdämpfung, plus 2 dBi
-Empfangsantenne ergibt −93 dBm. Gegen −123 dBm Empfindlichkeit bei SF7 bleiben
-rund <b>30 dB Reserve</b>. Den Sprung ins Nachbartal trägt der Bergstandort
+Empfangsantenne ergibt −93 dBm. Gegen rund −128 dBm Empfindlichkeit bei
+SF11/BW500 bleiben etwa <b>35 dB Reserve</b> — SF11 auf 500 kHz ist trotz der
+breiteren Bandbreite noch etwa 4 dB empfindlicher als das frühere SF7/BW125. Den Sprung ins Nachbartal trägt der Bergstandort
 (~1550 m gegen zwei Täler auf ~650 m), nicht die Sendeleistung.</div>
 
 <h2>2 Was das Relais tut</h2>
@@ -166,8 +168,9 @@ Ein Flash setzt die Funkparameter auf Werk zurück — dafür
 <div class="merk"><b>Im LoRaWAN-Modus ist ein Gerät nicht Teil dieses Netzes.</b>
 Nachgemessen: Der LA66 sendet mit <code>AT+DR=0</code> auf SF12 und springt über
 alle acht EU868-Kanäle (beobachtet: 867.3 und 868.3 MHz). Der Pico auf
-868.125/SF7 hörte in 95 s <b>null</b> Pakete. Spreizfaktoren sind
-quasi-orthogonal — ein SF7-Empfänger kann SF12 nicht demodulieren.
+868.125 hörte in 95 s <b>null</b> Pakete (damals auf SF7; mit dem heutigen
+SF11/BW500 gilt es unverändert). Spreizfaktoren sind quasi-orthogonal — ein
+Empfänger mit festem SF kann einen anderen nicht demodulieren.
 <br><br>Daraus folgt grundsätzlich: <b>Ein Knoten mit einem Funkmodul kann kein
 LoRaWAN-Relais sein.</b> LoRaWAN wechselt pro Sendung den Kanal und passt per
 ADR den Spreizfaktor an; ein Empfänger mit fester Frequenz und festem SF kann
@@ -217,6 +220,29 @@ Pico-Bilanz      2 gehört, 2 weitergegeben, 0 unterdrückt</pre>
 Kopie vom Relais −73 dBm — <b>19 dB stärker</b>. Genau dafür steht die Station
 auf dem Berg. Der TrackerD empfing dabei sein eigenes Paket als
 <code>R1&gt;…</code> zurück; das Relais gab es <b>nicht</b> erneut weiter.</p>
+
+<h3>Ebyte-Broadcasts, und was sie kosten</h3>
+<p>Ein Ebyte-Rahmen wird <b>unverändert</b> weitergereicht — kein
+<code>R1&gt;</code> davor. Er trägt einen eigenen 8-Byte-Kopf, und ein
+Empfänger liest die ersten acht Byte als eben diesen; ein vorangestelltes
+„R" macht den Rahmen unlesbar. Gegen Schleifen trägt hier allein der
+Dublettenspeicher, einen Sprungzähler gibt es in diesem Format nicht.</p>
+<p>Am Gateway ist beides zu sehen, unterscheidbar am Quarzversatz:</p>
+<pre>foff -27673  RSSI -76   Original vom E22
+foff   -144  RSSI -88   Kopie vom Relais   (byteweise identisch)</pre>
+<div class="warn"><b>Das Sendezeitbudget ist der Engpass, nicht die
+Empfindlichkeit.</b> Bei SF11/BW500 dauert ein 16-Byte-Rahmen 144 ms; die
+1-%-Regel sperrt danach rund 14 s. Vier Broadcasts im Abstand von 3,5 s:
+<pre>weiter: Ebyte, unveraendert  RSSI -23 SNR 8.3  144 ms
+  verworfen: Sendezeitbudget, noch 11.0 s gesperrt
+  verworfen: Sendezeitbudget, noch  7.5 s gesperrt
+  verworfen: Sendezeitbudget, noch  4.0 s gesperrt
+Bilanz: 4 gehoert, 1 weitergegeben, 3 unterdrueckt</pre>
+Drei von vier fielen nicht am Funk aus, sondern an der Rechtslage. Mit dem
+früheren SF7/BW125 waren es 72 ms und rund 7 s — der Umstieg auf das
+Ebyte-Profil hat das verdoppelt. Wer auf Durchsatz auslegt, muss hier ansetzen:
+kürzere Nutzlasten, seltener senden, oder ein zweites Modul für das Band
+869.4–869.65 MHz mit 10 % Sendezeit.</div>
 
 <h2>7 Dateien</h2>
 <table>

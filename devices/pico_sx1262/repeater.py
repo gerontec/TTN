@@ -42,7 +42,14 @@ import fernwirk
 import lora_p2p
 
 # --- Der gemeinsame Kanal -------------------------------------------------
-KANAL_FREQ, KANAL_SF, KANAL_BW = 868125000, 7, 125000
+# Eine einzige Quelle der Wahrheit: das Profil steht im Treiber, hier wird es
+# nur uebernommen. Frueher standen hier eigene Werte (868.125/SF7/BW125) -- die
+# liefen beim Umstieg auf das Ebyte-Profil stillschweigend auseinander, und der
+# Repeater lauschte auf einem Kanal, den niemand mehr benutzte.
+KANAL_FREQ = lora_p2p.FREQ_HZ
+KANAL_SF   = lora_p2p.SF
+KANAL_BW   = lora_p2p.BW_HZ
+KANAL_LDRO = lora_p2p.LDRO
 
 # --- Rahmenformat ---------------------------------------------------------
 # frisch:          IIII>nutzlast          z.B. b"A1B2>POSITION"
@@ -58,6 +65,27 @@ HEX = b"0123456789ABCDEF"
 # --- Schleifenschutz ------------------------------------------------------
 MARKER = b"R"                   # Praefix "R<sprung>", siehe Rahmenformat
 MAX_HOPS = 3                    # danach wird nicht mehr weitergegeben
+
+# --- Ebyte-Rahmen ---------------------------------------------------------
+# Ein E22/E90 verpackt selbst und laesst sich das nicht abgewoehnen:
+#   0x2C | Kanal | 2 Byte laufende Nummer | NETID | 2 Byte Adresse | Laenge
+# dann die Nutzlast, XOR-verweisst mit der Kanalnummer (die in Byte 1 steht).
+#
+# Ein solcher Rahmen darf **nicht** mit "Rn<kennung>>" versehen werden: der
+# Empfaenger liest die ersten acht Byte als Kopf, findet statt 0x2C ein 0x52
+# ("R") und verwirft alles. Ebyte-Verkehr wird deshalb unveraendert
+# weitergereicht. Gegen Schleifen traegt dort allein der Dublettenspeicher --
+# einen Sprungzaehler gibt es in diesem Format nicht, MAX_HOPS greift nicht.
+EBYTE_MAGIC = 0x2C
+EBYTE_KOPF  = 8
+
+
+def ist_ebyte(roh):
+    """Byte 0 ist die Kennung, Byte 7 die Nutzlastlaenge -- zusammen ein
+    belastbares Merkmal, das Textpakete nicht zufaellig erfuellen."""
+    return (len(roh) > EBYTE_KOPF
+            and roh[0] == EBYTE_MAGIC
+            and roh[EBYTE_KOPF - 1] == len(roh) - EBYTE_KOPF)
 DEDUP_S = 300                   # gleicher Inhalt fuer 5 min gesperrt
 DEDUP_MAX = 24
 
@@ -140,7 +168,7 @@ def bauen(sprung, absender, nutzlast):
 
 def _kanal(r):
     r.set_frequency(KANAL_FREQ)
-    r.set_modulation(KANAL_SF, KANAL_BW, lora_p2p.CR)
+    r.set_modulation(KANAL_SF, KANAL_BW, lora_p2p.CR, KANAL_LDRO)
 
 
 def run(telemetrie=None, verbose=True, dauer_s=0):
@@ -223,17 +251,24 @@ def run(telemetrie=None, verbose=True, dauer_s=0):
                 print("  verworfen: Weitergabe abgeschaltet")
             continue
 
-        n, absender, nutz = zerlege(roh)
-        if n >= MAX_HOPS:
-            unterdrueckt += 1
-            if verbose:
-                print("  verworfen: %d Spruenge erreicht, von %s"
-                      % (n, absender or b"?"))
-            continue
+        ebyte = ist_ebyte(roh)
+        if ebyte:
+            # unveraendert weiterreichen, siehe EBYTE_MAGIC oben
+            n, absender, nutz = 0, None, roh
+        else:
+            n, absender, nutz = zerlege(roh)
+            if n >= MAX_HOPS:
+                unterdrueckt += 1
+                if verbose:
+                    print("  verworfen: %d Spruenge erreicht, von %s"
+                          % (n, absender or b"?"))
+                continue
 
         # Schluessel aus Absender und Nutzlast, also ohne Sprungzaehler:
         # derselbe Inhalt geht nicht zweimal hinaus, ueber welchen Umweg auch.
-        if dedup.bekannt((absender or b"") + nutz):
+        # Bei Ebyte der ganze Rahmen -- die laufende Nummer darin unterscheidet
+        # zwei echte Aussendungen und faengt die Kopie vom Nachbarrelais ab.
+        if dedup.bekannt(roh if ebyte else (absender or b"") + nutz):
             unterdrueckt += 1
             if verbose:
                 print("  verworfen: Dublette, %r" % roh[:24])
@@ -245,7 +280,7 @@ def run(telemetrie=None, verbose=True, dauer_s=0):
                   % budget.wartezeit_s())
             continue
 
-        raus = bauen(n + 1, absender, nutz)
+        raus = roh if ebyte else bauen(n + 1, absender, nutz)
         luft = lora_p2p.airtime_ms(len(raus), sf=KANAL_SF, bw=KANAL_BW)
         r.set_power(konf["out_power"])
         ok = r.send(raus)
@@ -253,7 +288,8 @@ def run(telemetrie=None, verbose=True, dauer_s=0):
         weiter += 1 if ok else 0
         stat["weiter"] = weiter
         stat["unterdrueckt"] = unterdrueckt
-        print("%s von %s  Sprung %d  RSSI %.0f SNR %.1f  %.0f ms  %r"
+        print("%s %s  RSSI %.0f SNR %.1f  %.0f ms  %r"
               % ("weiter:" if ok else "TX-FEHLER:",
-                 (absender or b"ohne").decode(), n + 1, rssi, snr, luft,
-                 nutz[:32]))
+                 "Ebyte, unveraendert" if ebyte
+                 else "von %s Sprung %d" % ((absender or b"ohne").decode(), n + 1),
+                 rssi, snr, luft, nutz[:32]))

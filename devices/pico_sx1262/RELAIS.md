@@ -8,32 +8,49 @@ dem Nachbartal Bad Heilbrunn. Firmware: `repeater.py` auf Basis von
    dell 192.168.5.23
         │ UDP 1702
         ▼
-   DLOS8N Lenggries ──868.125 SF7 14dBm──►┐
-                                          │
-   TrackerD / Feld  ──868.125 SF7────────►│  Pico Brauneck (~1550 m)
-                                          │  hört nur 868.125 SF7
-                                          ├──868.125 SF7  14dBm──► DLOS8N Lenggries
-                                          └──869.525 SF12 22dBm──► Bad Heilbrunn
+   DLOS8N Lenggries ──868.125 SF11 BW500──►┐
+                                           │
+   E22 / Feld       ──868.125 SF11 BW500──►│  Relais Brauneck (~1550 m)
+                                           │  ein Kanal, ein Modul
+                                           └──868.125 SF11 BW500──► DLOS8N Lenggries
 ```
 
-## Warum getrennte Kanäle
+## Ein Kanal, nicht zwei — und was das kostet
 
-Ein Relais braucht Ein- und Ausgangstrennung — wie jede Relaisfunkstelle, die
-mit Ablage arbeitet. Bei LoRa gibt es dafür eine zweite, schärfere Achse:
-**Spreizfaktoren sind quasi-orthogonal**, ein SF7-Empfänger demoduliert SF12
-gar nicht.
+Hier stand bis zum 17.08.2026 ein Entwurf mit **zwei** Kanälen: Eingang auf
+868.125, Ausgang auf 869.525 mit SF12. Der Reiz lag nicht in der Trennung an
+sich, sondern im Frequenzband:
 
-Dazu der rechtliche Hebel, der bei gleicher Frequenz verschenkt wäre:
-
-| | Eingang 868.125 | Ausgang 869.525 |
+| | 868.0–868.6 (h1.3) | 869.4–869.65 (h1.7) |
 |---|---|---|
-| Band | 868.0–868.6 (h1.3) | **869.4–869.65 (h1.7)** |
 | Sendeleistung | 25 mW / 14 dBm | **500 mW / bis 22 dBm** |
 | Sendezeit | 1 % | **10 %** |
-| Spreizfaktor | SF7 | SF12 (≈14 dB empfindlicher) |
 
-Zusammen rund **+8 dB Leistung, +14 dB Empfindlichkeit, zehnfaches
-Zeitbudget**.
+Zusammen rund +8 dB Leistung und das zehnfache Zeitbudget.
+
+**Verworfen, weil er mit Ebyte nicht baubar ist.** Ein E90-DTU hat ein
+Funkmodul und genau einen Kanal in `REG2`; die Luftrate legt SF und Bandbreite
+gemeinsam fest. Ein Zweikanalrelais bräuchte ein zweites Modul. Im Code stand
+er ohnehin nie: `out_freq` und `out_sf` lagen in `relais.json`, wurden aber von
+keiner Zeile gelesen — nur `out_power` ist echt.
+
+**Der Preis ist das Sendezeitbudget, und er ist messbar.** Bei SF11/BW500
+dauert ein 16-Byte-Rahmen 144 ms; die 1-%-Regel sperrt danach rund 14 s. Ein
+Lauf vom 17.08.2026 mit vier Broadcasts im Abstand von 3,5 s:
+
+```
+weiter: Ebyte, unveraendert  RSSI -23 SNR 8.3  144 ms
+  verworfen: Sendezeitbudget, noch 11.0 s gesperrt
+  verworfen: Sendezeitbudget, noch  7.5 s gesperrt
+  verworfen: Sendezeitbudget, noch  4.0 s gesperrt
+Bilanz: 4 gehoert, 1 weitergegeben, 3 unterdrueckt
+```
+
+Drei von vier fielen also nicht am Funk aus, sondern an der Rechtslage. Mit dem
+früheren SF7/BW125 waren es 72 ms und rund 7 s Sperre — der Umstieg auf das
+Ebyte-Profil hat das verdoppelt. **Wer den Krisenkanal auf Durchsatz auslegt,
+muss hier ansetzen**, nicht an der Empfindlichkeit: Nutzlasten kürzen, seltener
+senden, oder doch ein zweites Modul für 869.4–869.65.
 
 ## Eigenecho: zwei Richtungen, zwei Mechanismen
 
