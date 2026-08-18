@@ -104,13 +104,21 @@ def ist_ebyte(roh):
     return (len(roh) > EBYTE_KOPF
             and roh[0] == EBYTE_MAGIC
             and roh[EBYTE_KOPF - 1] == len(roh) - EBYTE_KOPF)
-DEDUP_S = 300                   # gleicher Inhalt fuer 5 min gesperrt
+DEDUP_S = 9                     # gleicher Inhalt fuer 9 s gesperrt. Fuenf
+                                # Minuten waren zu grob: eine Station, die
+                                # denselben Text turnusmaessig wiederholt --
+                                # Position, Status, Quittung -- kam damit nur
+                                # alle fuenf Minuten durch das Relais. Neun
+                                # Sekunden fangen das unmittelbare Echo ueber
+                                # eine zweite Relaisstelle ab und sonst nichts.
 DEDUP_MAX = 24
 
-# --- Sendezeitbudget ------------------------------------------------------
-# Sperrzeit = Luftzeit * (100/Prozent - 1), die uebliche konservative Auslegung.
-# 868.0-868.6 MHz erlaubt 1 %; bei ~72 ms Luftzeit sind das gut 7 s Sperre.
-DUTY = 1.0
+# --- Sendezeitbudget: bewusst keines ---------------------------------------
+# Frueher lag hier eine 1-%-Sperre (Luftzeit * 99 als Wartezeit). Sie hat im
+# Betrieb drei von vier Paketen verworfen und damit die Weitergabe unbrauchbar
+# gemacht -- ein Relais, das jedes vierte Paket traegt, ist kein Relais. Die
+# Begrenzung ist damit Sache des Betreibers, nicht der Firmware. Gegen
+# Schleifen tragen weiterhin Sprungzaehler und Dublettensperre.
 
 # --- Systemtakt -----------------------------------------------------------
 # Die Station haengt am Panel ohne Puffer; jedes eingesparte Milliampere senkt
@@ -119,24 +127,6 @@ DUTY = 1.0
 # liefert der SPI Muell (Syncword liest a2a2 statt 3444), 12 MHz lehnt
 # MicroPython ab. 48 MHz laesst reichlich Abstand zu dieser Kante.
 TAKT_HZ = 48000000
-
-
-class Budget:
-    """Haelt die Sperrzeit des Bandes nach."""
-
-    def __init__(self, prozent):
-        self.faktor = 100.0 / prozent - 1.0
-        self.frei_ab = 0
-
-    def frei(self):
-        return utime.ticks_diff(utime.ticks_ms(), self.frei_ab) >= 0
-
-    def wartezeit_s(self):
-        return max(0, utime.ticks_diff(self.frei_ab, utime.ticks_ms())) / 1000.0
-
-    def belegen(self, luftzeit_ms):
-        self.frei_ab = utime.ticks_add(utime.ticks_ms(),
-                                       int(luftzeit_ms * self.faktor))
 
 
 class Dedup:
@@ -202,16 +192,15 @@ def run(telemetrie=None, verbose=True, dauer_s=0):
     konf = fernwirk.konf_laden()
     if telemetrie is not None:
         konf["telemetrie"] = telemetrie
-    budget = Budget(DUTY)
     dedup = Dedup()
     gehoert = weiter = unterdrueckt = 0
     stat = {"start": start, "weiter": 0, "unterdrueckt": 0,
             "dedup": dedup, "reboot": False, "konf_geaendert": False}
 
     print("Relais Brauneck -- ein Kanal, jeder hoert jeden")
-    print("  Kanal : %.3f MHz  SF%d  BW%d  %d dBm  (%.0f %% Sendezeit)"
+    print("  Kanal : %.3f MHz  SF%d  BW%d  %d dBm  (ohne Sendezeitsperre)"
           % (KANAL_FREQ / 1e6, KANAL_SF, KANAL_BW // 1000,
-             konf["out_power"], DUTY))
+             konf["out_power"]))
     print("  Takt  : %d MHz,  hoechstens %d Spruenge"
           % (machine.freq() // 1000000, MAX_HOPS))
     print("  Fernwirken: C>POWER <dBm> | STATUS | RELAY | TELEM | SAVE | REBOOT")
@@ -248,12 +237,9 @@ def run(telemetrie=None, verbose=True, dauer_s=0):
             if stat["konf_geaendert"]:
                 fernwirk.konf_sichern(konf)
             print("  Befehl %r -> %s" % (roh, text))
-            if budget.frei():
-                a = fernwirk.antwort(text, konf.get("id", "B001"))
-                r.set_power(konf["out_power"])
-                r.send(a)
-                budget.belegen(lora_p2p.airtime_ms(len(a), sf=KANAL_SF,
-                                                   bw=KANAL_BW))
+            a = fernwirk.antwort(text, konf.get("id", "B001"))
+            r.set_power(konf["out_power"])
+            r.send(a)
             if stat["reboot"]:
                 utime.sleep_ms(500)
                 machine.reset()
@@ -298,17 +284,10 @@ def run(telemetrie=None, verbose=True, dauer_s=0):
                 print("  verworfen: Dublette, %r" % roh[:24])
             continue
 
-        if not budget.frei():
-            unterdrueckt += 1
-            print("  verworfen: Sendezeitbudget, noch %.1f s gesperrt"
-                  % budget.wartezeit_s())
-            continue
-
         raus = roh if ebyte else bauen(n + 1, absender, nutz)
         luft = lora_p2p.airtime_ms(len(raus), sf=KANAL_SF, bw=KANAL_BW)
         r.set_power(konf["out_power"])
         ok = r.send(raus)
-        budget.belegen(luft)
         weiter += 1 if ok else 0
         stat["weiter"] = weiter
         stat["unterdrueckt"] = unterdrueckt

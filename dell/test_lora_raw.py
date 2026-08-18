@@ -105,7 +105,7 @@ class TestTextRahmen(unittest.TestCase):
 
 def _args(**kw):
     grund = dict(freq=868.125, all=False, self_filter=True, id="E09C",
-                 ebyte=True)
+                 ebyte=True, netid=lr.EBYTE_NETID)
     grund.update(kw)
     return Namespace(**grund)
 

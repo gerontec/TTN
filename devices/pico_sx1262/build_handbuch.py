@@ -63,10 +63,10 @@ Ebytes Broadcast-Modus benutzen.</p>
 <tr><td>Spreizfaktor</td><td>SF11</td><td>Ebyte-Luftrate 2.4k; die Etiketten sind nominal, gemessen ist SF11</td></tr>
 <tr><td>Bandbreite</td><td><b>500 kHz</b></td><td>Die Ebyte-Leiter ist durchgehend BW500, nie BW125 — nachgemessen</td></tr>
 <tr><td>LDRO</td><td>1</td><td>Ebyte sendet mit 1; die Rechenregel käme bei SF11/BW500 auf 0 und jede Nutzlast bekäme CRC-Fehler</td></tr>
-<tr><td>Syncword</td><td><b>0x34</b> (öffentlich)</td><td>Historisch, weil der Rohkanal anfangs das Syncword der LoRaWAN-Kanäle mitbenutzen musste. Seit 17.08.2026 nicht mehr nötig — siehe Kapitel 8.</td></tr>
+<tr><td>Syncword</td><td><b>0x34</b> (öffentlich)</td><td>Der Rohkanal kann ein eigenes Syncword tragen, ohne LoRaWAN zu berühren — siehe Kapitel 8.</td></tr>
 <tr><td>CRC</td><td>an</td><td>sonst verwirft der Paket-Forwarder</td></tr>
 <tr><td>Leistung</td><td>bis 14 dBm ERP</td><td>25 mW ist das Limit in 868.0–868.6</td></tr>
-<tr><td>Sendezeit</td><td>1 %</td><td>bei ~144 ms Luftzeit rund <b>14 s</b> Sperre je Paket — der eigentliche Engpass, siehe Kapitel 6</td></tr>
+<tr><td>Sendetakt</td><td>ab 5 s Abstand</td><td>darunter kollidieren Original und Relaiskopie, gemessen in Kapitel 6</td></tr>
 </table>
 
 <div class="merk"><b>Streckenrechnung 10 km, Sichtverbindung.</b>
@@ -94,7 +94,7 @@ dessen Direktsignal zu schwach wäre, das Tal trotzdem.</p>
 <ul>
 <li>Während des Sendens ist der Empfänger taub — die eigene Aussendung hört die Station nie unmittelbar.</li>
 <li>Jedes weitergegebene Paket bekommt <code>R&lt;sprung&gt;&gt;</code>. Kommt es über eine zweite Relaisstelle zurück, greift der Zähler.</li>
-<li>Der Dublettenspeicher schlüsselt auf den Inhalt <b>ohne</b> Marker und sperrt denselben Text fünf Minuten.</li>
+<li>Der Dublettenspeicher schlüsselt auf den Inhalt <b>ohne</b> Marker und sperrt denselben Text neun Sekunden — lang genug gegen das unmittelbare Echo über eine zweite Relaisstelle, kurz genug für Stationen, die denselben Text turnusmäßig wiederholen.</li>
 </ul>
 <p>Mehrere Relaisstellen sind dadurch möglich: aus <code>R1&gt;</code> wird
 <code>R2&gt;</code> und so fort, bis drei Sprünge erreicht sind.</p>
@@ -230,25 +230,22 @@ Dublettenspeicher, einen Sprungzähler gibt es in diesem Format nicht.</p>
 <p>Am Gateway ist beides zu sehen, unterscheidbar am Quarzversatz:</p>
 <pre>foff -27673  RSSI -76   Original vom E22
 foff   -144  RSSI -88   Kopie vom Relais   (byteweise identisch)</pre>
-<div class="warn"><b>Das Sendezeitbudget ist der Engpass, nicht die
-Empfindlichkeit.</b> Bei SF11/BW500 dauert ein 16-Byte-Rahmen 144 ms; die
-1-%-Regel sperrt danach rund 14 s. Vier Broadcasts im Abstand von 3,5 s:
-<pre>weiter: Ebyte, unveraendert  RSSI -23 SNR 8.3  144 ms
-  verworfen: Sendezeitbudget, noch 11.0 s gesperrt
-  verworfen: Sendezeitbudget, noch  7.5 s gesperrt
-  verworfen: Sendezeitbudget, noch  4.0 s gesperrt
-Bilanz: 4 gehoert, 1 weitergegeben, 3 unterdrueckt</pre>
-Drei von vier fielen nicht am Funk aus, sondern an der Rechtslage. Mit dem
-früheren SF7/BW125 waren es 72 ms und rund 7 s — der Umstieg auf das
-Ebyte-Profil hat das verdoppelt. Wer auf Durchsatz auslegt, muss hier ansetzen:
-kürzere Nutzlasten, seltener senden, oder ein zweites Modul für das Band
-869.4–869.65 MHz mit 10 % Sendezeit.</div>
+<div class="merk"><b>Der Sendetakt ist die Auslegungsgröße, nicht die
+Empfindlichkeit.</b> Gemessen mit zehn Paketen vom E22, am Gateway gezählt:
+<pre>Abstand 2,5 s   8 von 10 Originalen   20 % Verlust
+Abstand 6   s   6 von  6 Originalen    0 % Verlust</pre>
+Pegel und Rauschabstand waren in beiden Läufen gleich (−72 bis −77 dBm, SNR
+8–10 dB) und es gab keinen einzigen CRC-Fehler — die fehlenden Pakete kamen
+nicht kaputt an, sondern gar nicht. Ursache ist die Weitergabe selbst: jedes
+Paket erzeugt eine zweite Aussendung, und bei engem Takt liegt die Kopie des
+einen auf dem Original des nächsten. Unter etwa 5 s Abstand beginnt der
+gemeinsame Kanal deshalb, sich selbst zu blockieren.</div>
 
 <h2>7 Dateien</h2>
 <table>
 <tr><th>Ort</th><th>Datei</th><th>Zweck</th></tr>
 <tr><td rowspan="4">Pico</td><td><code>main.py</code></td><td>Selbststart nach jedem Sonnenaufgang</td></tr>
-<tr><td><code>repeater.py</code></td><td>Flutung, Sprungzähler, Dubletten, Sendezeitbudget</td></tr>
+<tr><td><code>repeater.py</code></td><td>Flutung, Sprungzähler, Dubletten</td></tr>
 <tr><td><code>fernwirk.py</code></td><td>Befehle, Konfiguration in <code>/relais.json</code></td></tr>
 <tr><td><code>lora_p2p.py</code></td><td>SX1262-Treiber</td></tr>
 <tr><td rowspan="2">dell 192.168.5.23</td><td><code>lora_raw.py</code></td><td>Roh-Abgriff UDP 1702, Steuereingang 1703, MQTT</td></tr>
@@ -483,8 +480,7 @@ im selben Unterband zulässig, aber beim Sendezeitbudget mitzurechnen.</div>
 
 <p>Das Netz trennt seit dem 17.08.2026 zwei Gerätegruppen, verbunden allein
 durch den E90-DTU als Relais. Dahinter stehen <b>zwei voneinander unabhängige
-Mechanismen</b>, die sich leicht verwechseln lassen — ich habe sie beim
-Erarbeiten mehrfach vermischt.</p>
+Mechanismen</b>, die sich leicht verwechseln lassen.</p>
 
 <table>
 <tr><th></th><th>Feld</th><th>Quelle</th></tr>
@@ -501,9 +497,7 @@ darin. Bei Broadcast <code>FF FF</code> geben alle Module auf dem Kanal aus —
 eines auf einem anderen Kanal schweigt auch dann.</p>
 <div class="warn"><b>Die Adresse im Rahmen ist das Ziel, nicht der Absender.</b>
 Die eigene Adresse des Senders taucht im Paket überhaupt nicht auf. Ein
-Ebyte-Rahmen sagt also, <i>an wen</i> er geht — nie, <i>von wem</i> er kam.
-Frühere Fassungen dieses Handbuchs und von <code>dell/lora_raw.py</code>
-beschrifteten Byte 5–6 als Absender; das war falsch.</div>
+Ebyte-Rahmen sagt also, <i>an wen</i> er geht — nie, <i>von wem</i> er kam.</div>
 
 <h3>9.2 Warum eine Gruppe über Kanäle nicht geht</h3>
 <p>Wäre der Kanal die Gruppentrennung, kostete jede Gruppe eine eigene
@@ -540,7 +534,7 @@ sonst hört sich niemand.</p>
 <p>Alle zwanzig tragen dieselbe Adresse. Sie ist kein Gerätename, sondern der
 gemeinsame Netzschlüssel; eine Knotenkennung gehört in die <b>Nutzlast</b>,
 nicht ins Adressfeld. Einzeladressierung scheidet im Transparentmodus ohnehin
-aus, siehe 9.8.</p>
+aus, siehe 9.9.</p>
 <div class="warn"><b>Nie <code>FFFF</code> ausrollen.</b> Broadcast hat Vorrang
 vor der Netzkennung — mit <code>FFFF</code> fielen die beiden Gruppen zu einer
 zusammen, und jeder Rahmen käme zusätzlich als Relaisdublette an. Der
@@ -578,12 +572,11 @@ beiden — und nur zwischen ihnen.</p>
 <p>Prüfbyte, Zieladresse, Länge und Nutzlast bleiben unangetastet — nur die
 NETID wird auf die Gegengruppe gesetzt, sonst verwürfen deren Empfänger den
 Rahmen.</p>
-<div class="warn">Vorher stand der E90 auf <code>ADDH = ADDL = 0x00</code>,
-leitete also von NETID 0 nach NETID 0 zurück. Ebyte warnt davor ausdrücklich:
+<div class="warn"><b>ADDH und ADDL müssen verschieden sein.</b> Ebyte dazu:
 <i>„Using two or more relays with <b>identical</b> ADDH and ADDL addresses is
-not recommended, as it may cause <b>circular forwarding</b>."</i> Das erklärte
-das Echo, das der E22 auf seiner seriellen Seite sah — ein Symptom, kein
-Merkmal.</div>
+not recommended, as it may cause <b>circular forwarding</b>."</i> Ein Paar
+<code>0x0000</code> koppelt NETID 0 auf sich selbst und wirft jedes Paket in
+sein Ursprungsnetz zurück.</div>
 
 <h3>9.6 Nachgewiesen</h3>
 <p>Gleiche Adresse, gleicher Kanal, gleiche Modulation — nur die NETID des
@@ -606,11 +599,57 @@ Ebyte-Protokoll nicht.</p>
                                        vom E22 zugleich verworfen</pre>
 <p>Das Gateway ist damit kein Gruppenmitglied, sondern <b>passiver
 Mithörer</b> — praktisch günstig: Die Trennung wirkt zwischen den
-Ebyte-Knoten, während die Überwachung über MQTT beide Gruppen sieht. Nur wenn
-<code>dell/lora_raw.py</code> sendet, entsteht Gruppenzugehörigkeit, und die
-steht dort als <code>EBYTE_NETID</code>.</p>
+Ebyte-Knoten, während die Überwachung über MQTT beide Gruppen sieht. Erst wenn
+<code>dell/lora_raw.py</code> selbst sendet, entsteht Gruppenzugehörigkeit —
+und die ist frei wählbar, siehe 9.8.</p>
 
-<h3>9.8 Was damit nicht geht</h3>
+<h3>9.8 dell als frei wählbares Gruppenmitglied</h3>
+<p>dell ist die einzige Station, deren Gruppe sich ohne Schraubendreher
+ändern lässt: ein Ebyte-Knoten trägt seine NETID im Register und kommt nur im
+Konfigurationsmodus daran, <code>lora_raw.py</code> baut den Rahmen dagegen
+selbst. Seit 18.08.2026 sind Gruppe und Ziel Parameter statt Konstanten.</p>
+
+<table>
+<tr><th>Schalter</th><th>Vorgabe im Code</th><th>Bedeutung</th></tr>
+<tr><td><code>--netid</code></td><td><code>00</code></td><td>Gruppe der gesendeten Rahmen, <b>hexadezimal</b> gelesen: <code>11</code> ist 0x11, nicht elf. <code>187</code> wird als zu große Hexzahl abgewiesen statt still zu 0xBB zu werden</td></tr>
+<tr><td><code>--ziel</code></td><td><code>FFFF</code></td><td>Zieladresse im Rahmen. <code>FFFF</code> = Rundruf und sticht die NETID; jede andere Adresse lässt die Gruppentrennung wirken</td></tr>
+<tr><td><code>--power</code></td><td><code>14</code></td><td>dBm ERP, 14 = 25 mW</td></tr>
+<tr><td><code>--freq</code> / <code>--txfreq</code></td><td><code>868.125</code> / wie <code>--freq</code></td><td>Rohkanal; <code>--txfreq</code> gleicht den Quarzversatz der Gegenstelle aus</td></tr>
+<tr><td><code>--datr</code></td><td><code>SF11BW500</code></td><td>muss zu <code>chan_Lora_std</code> passen</td></tr>
+<tr><td><code>--prea</code></td><td>Vorgabe des Forwarders (8)</td><td>Präambellänge in Symbolen</td></tr>
+<tr><td><code>--id</code></td><td>letzte vier Hexstellen der MAC (<code>E09C</code>)</td><td>eigene Kennung im Textformat</td></tr>
+<tr><td><code>--ebyte</code></td><td>an</td><td><code>--no-ebyte</code> sendet ungerahmt; ein E22/E90 verwirft das</td></tr>
+<tr><td><code>--self-filter</code></td><td>an</td><td><code>--no-self-filter</code> zeigt die eigenen Aussendungen mit</td></tr>
+<tr><td><code>--ctrl-port</code></td><td><code>1703</code></td><td>UDP-Steuereingang auf 127.0.0.1</td></tr>
+</table>
+
+<p><b>Je Datagramm umschalten</b>, ohne den Dienst anzufassen — ein Präfix am
+Steuereingang, beide Teile einzeln weglassbar:</p>
+<pre>printf '@bb:text'      | nc -u -w0 127.0.0.1 1703    NETID bb, Ziel aus --ziel
+printf '@/ffff:text'   | nc -u -w0 127.0.0.1 1703    Ziel Rundruf, NETID aus --netid
+printf '@bb/ffff:text' | nc -u -w0 127.0.0.1 1703    beides</pre>
+<p>Das <code>@</code> kollidiert mit keinem Rahmenformat des Netzes — die
+tragen <code>C&gt;</code>, <code>A&gt;</code> oder vier Hexstellen vor dem
+<code>&gt;</code>. Ohne Präfix gelten die Vorgaben des Dienstes.</p>
+
+<div class="merk"><b>Was der Dienst tatsächlich fährt</b> (systemd-Drop-in
+<code>/etc/systemd/system/lora-raw.service.d/all.conf</code>) weicht an drei
+Stellen von den Code-Vorgaben ab:
+<pre>lora_raw.py --mqtt --all --power 27 --ziel 2201 --netid bb</pre>
+<code>--netid bb</code> macht dell zum Mitglied der Gruppe B.
+<code>--ziel 2201</code> adressiert den Netzschlüssel statt Rundruf, damit die
+NETID-Trennung überhaupt greift. <code>--power 27</code> liegt über den 14 dBm
+der Code-Vorgabe.</div>
+
+<p>Auf der Empfangsseite trägt jeder MQTT-Datensatz seit demselben Stand das
+Feld <code>fuer_uns</code>: wahr, wenn die NETID des Rahmens der eigenen
+entspricht <b>oder</b> das Ziel <code>FFFF</code> ist. Das ist genau die
+Entscheidung, die ein Ebyte-Knoten trifft — damit ist im Mitschnitt ablesbar,
+was ein Knoten der eigenen Gruppe ausgegeben hätte:</p>
+<pre>AN-DELL-BB-02  netid   0  foff -27925  fuer_uns nein   Original vom E22
+AN-DELL-BB-02  netid 187  foff  +4278  fuer_uns JA     Weitergabe des Relais</pre>
+
+<h3>9.9 Was damit nicht geht</h3>
 <p>Gezielte Einzeladressierung. Ein Rahmen an <code>2201</code> statt an den
 Rundruf kam im Test <b>nicht</b> an. Kapitel 4.1 des Handbuchs steht unter der
 Voraussetzung <i>„in fixed-point mode"</i> — die Endgeräte laufen aber

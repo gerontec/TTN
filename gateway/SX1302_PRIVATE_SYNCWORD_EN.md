@@ -131,8 +131,7 @@ That turned a sixteen-restart hunt into one short measurement window.
 
 ## Worked example: an Ebyte E22 / E90-DTU
 
-Two things about Ebyte modules that cost me time, both measured rather than
-read:
+Two things about Ebyte modules, both measured rather than read:
 
 **The air rate labels are nominal, and the ladder is BW500 throughout.** The
 table circulating online maps them to BW125. That is wrong. Index 2 ("2.4k") is
@@ -155,7 +154,7 @@ a byte-identical frame — and that the whitening key is a constant 0x12, not th
 channel number (the 868 device's channel just happens to be 18 = 0x12; the 433
 device uses channel 23 and still whitens with 0x12). Bytes 5–6 are the frame's
 **destination**, not its sender — an Ebyte frame says who it is *for*, never who
-it came *from*. An earlier revision of this guide had that backwards:
+it came *from*:
 
 ```
 2C 12 87 26 00 FF FF 07 | 42 40 5D 56 3F 22 21
@@ -171,8 +170,7 @@ byte 7    payload length
 
 ### Addressing: two mechanisms that look like one
 
-Byte 4 and bytes 5–6 do different jobs, and they are easy to conflate — I did,
-for a while.
+Byte 4 and bytes 5–6 do different jobs, and they are easy to conflate.
 
 **The destination address selects a member.** In transparent mode a module
 outputs a frame when the destination equals its own address, or when the

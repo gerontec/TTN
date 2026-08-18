@@ -18,6 +18,18 @@ Ein Node mit dem privaten 0x12 wird nicht gehoert, siehe README.
   ./lora_raw.py --all                # jedes Paket, auch LoRaWAN
   ./lora_raw.py --mqtt               # zusaetzlich nach mosquitto
   ./lora_raw.py --send "hallo"       # einmal senden, dann weiter lauschen
+  ./lora_raw.py --netid bb           # als Gruppe BB senden statt als 00
+
+Der Steuereingang (UDP 127.0.0.1:1703) nimmt Gruppe und Ziel je Datagramm:
+
+  printf '@bb:hallo'      | nc -u -w0 127.0.0.1 1703   # NETID BB
+  printf '@/ffff:hallo'   | nc -u -w0 127.0.0.1 1703   # Rundruf
+  printf '@bb/ffff:hallo' | nc -u -w0 127.0.0.1 1703   # beides
+
+Ohne Praefix gelten --netid und --ziel. Damit laesst sich in jede Gruppe und
+an jedes Ziel senden, ohne den Dienst neu zu starten -- noetig etwa, um die
+Rueckrichtung des E90-Relais (BB -> 00) auszuloesen, die sich sonst mangels
+Sender auf BB nie zeigt.
 """
 import argparse
 import base64
@@ -25,6 +37,7 @@ import binascii
 import glob
 import json
 import logging
+import re
 import select
 import socket
 import sys
@@ -47,20 +60,36 @@ HEXZIFFERN = set("0123456789ABCDEF")
 
 # Ebyte-Rahmen (E22/E90), siehe devices/pico_sx1262/EBYTE_E90.md:
 #   2 Byte Kennung (0x2C, Kanal) | Pruefbyte xx, xx^0xA1 | NETID |
-#   2 Byte Absenderadresse | Laenge | Nutzlast, XOR 0x12
-# Das Modul traegt seine *eigene* Adresse ein -- genau das, was zum
-# Selbsterkennen noetig ist. Das Pruefbytepaar ist eine XOR-Summe ueber die
-# Nutzlast, kein Zaehler: gleiche Nutzlast ergibt Byte fuer Byte denselben
-# Rahmen.
+#   2 Byte Zieladresse | Laenge | Nutzlast, XOR 0x12
+# Byte 5-6 ist das *Ziel*, nicht der Absender -- einen Absender enthaelt der
+# Rahmen ueberhaupt nicht. Dass es wie eine Absenderkennung wirkt, liegt daran,
+# dass ein Modul im Transparentmodus seine eigene Adresse ins Zielfeld setzt.
+# Das Pruefbytepaar ist eine XOR-Summe ueber die Nutzlast, kein Zaehler:
+# gleiche Nutzlast ergibt Byte fuer Byte denselben Rahmen.
 EBYTE_MAGIC = 0x2C
 EBYTE_KOPF = 8
 EBYTE_XOR = 0x12            # Weissung, konstant -- nicht die Kanalnummer
 EBYTE_KANAL = 18            # 850.125 + 18 = 868.125 MHz, Werksdefault der 900er
-EBYTE_NETID = 0x00          # Quellgruppe. Der E90 leitet als Zwei-Wege-Relais
-                            # zwischen 0x00 und 0xBB weiter (ADDH/ADDL sind im
-                            # Relaismodus keine Adressen, sondern das
-                            # NETID-Paar). Wer nach Gruppe BB senden will,
-                            # bleibt auf 0x00 -- das Relais traegt es hinueber.
+EBYTE_NETID = 0x00          # Vorgabe-Quellgruppe, ueberschreibbar mit --netid
+                            # und je Datagramm mit dem Praefix @hh: am
+                            # Steuereingang. Der E90 leitet als Zwei-Wege-
+                            # Relais zwischen 0x00 und 0xBB weiter (ADDH/ADDL
+                            # sind im Relaismodus keine Adressen, sondern das
+                            # NETID-Paar). Nach Gruppe BB kommt man damit auf
+                            # zwei Wegen: auf 0x00 bleiben und das Relais
+                            # tragen lassen, oder direkt als 0xBB senden --
+                            # letzteres ist der einzige Weg, die Rueckrichtung
+                            # des Relais (BB -> 00) ueberhaupt auszuloesen.
+
+# Praefix am Steuereingang, mit dem ein einzelnes Datagramm Gruppe und Ziel
+# setzt -- beides einzeln weglassbar:
+#   @bb:Nachricht        NETID 0xBB, Ziel aus --ziel
+#   @/ffff:Nachricht     NETID aus --netid, Ziel FFFF (Rundruf)
+#   @bb/ffff:Nachricht   beides
+# Bewusst ein Zeichen, das in keinem Rahmenformat des Netzes vorkommt (die
+# tragen C>, A> oder vier Hexstellen vor dem >). Wer wirklich eine Nutzlast
+# senden will, die so beginnt, muss --netid bzw. --ziel nehmen.
+PRAEFIX = re.compile(rb"^@([0-9a-fA-F]{0,2})(?:/([0-9a-fA-F]{4}))?:")
 
 # --- Geraeteerkennung -----------------------------------------------------
 # Jede Station traegt ihre Kennung im Rahmen: Ebyte in der Adresse Byte 5-6,
@@ -188,13 +217,56 @@ def ebyte_netid(roh):
     return roh[4] if ist_ebyte(roh) else None
 
 
+def ebyte_fuer_gruppe(roh, netid):
+    """Wuerde ein Knoten unserer Gruppe diesen Rahmen ausgeben?
+
+    Zwei Wege hinein, und der zweite sticht den ersten: gleiche NETID, oder
+    Rundruf an FFFF -- "network code filtering has lower priority than
+    broadcast addresses". Kein Ebyte-Rahmen: None, die Frage stellt sich nicht.
+    """
+    if not ist_ebyte(roh):
+        return None
+    return roh[4] == (netid & 0xFF) or ebyte_ziel(roh) == EBYTE_BROADCAST
+
+
 def ebyte_nutzlast(roh):
     """Klartext-Nutzlast aus einem Ebyte-Rahmen (XOR-Weissung zuruecknehmen)."""
     laenge = roh[EBYTE_KOPF - 1]
     return bytes(b ^ EBYTE_XOR for b in roh[EBYTE_KOPF:EBYTE_KOPF + laenge])
 
 
-def ebyte_rahmen(nutz, kennung):
+def netid_lesen(wert):
+    """NETID von der Kommandozeile, immer hexadezimal.
+
+    Im ganzen Netz heissen die Gruppen hex -- 00 und BB -- also wird auch hier
+    hex gelesen: '11' ist 0x11, nicht elf. Ein '0x' davor ist erlaubt. Wer
+    dezimal denkt, faellt nicht still herein: '187' ist als Hexzahl zu gross
+    und wird abgewiesen.
+    """
+    t = wert.lower()
+    if t.startswith("0x"):
+        t = t[2:]
+    if not 1 <= len(t) <= 2 or set(t) - set("0123456789abcdef"):
+        raise argparse.ArgumentTypeError(
+            "NETID als ein oder zwei Hexstellen angeben, z.B. bb")
+    return int(t, 16)
+
+
+def praefix_abtrennen(roh, netid_vorgabe, ziel_vorgabe):
+    """'@bb/ffff:Text' -> (0xBB, 'FFFF', b'Text').
+
+    Fehlt ein Teil, gilt die Vorgabe; ohne Praefix bleibt alles unveraendert.
+    """
+    treffer = PRAEFIX.match(roh)
+    if not treffer:
+        return netid_vorgabe, ziel_vorgabe, roh
+    netid, ziel = treffer.group(1), treffer.group(2)
+    return (int(netid, 16) if netid else netid_vorgabe,
+            ziel.decode().upper() if ziel else ziel_vorgabe,
+            roh[treffer.end():])
+
+
+def ebyte_rahmen(nutz, kennung, netid=EBYTE_NETID):
     """Nutzlast in einen Ebyte-Rahmen packen.
 
     Ein E22/E90 verwirft alles, was nicht seinem Format entspricht -- Klartext
@@ -203,9 +275,14 @@ def ebyte_rahmen(nutz, kennung):
 
         0x2C | Kanal | xx | xx^0xA1 | NETID | ADDH | ADDL | Laenge | Nutzlast
 
-    xx ist eine XOR-Summe ueber die Nutzlast, kein Zaehler. Die Adresse traegt
-    das sendende Geraet als *eigene* Kennung ein -- hier die vier Hexstellen
-    aus der MAC, damit Text- und Ebyte-Identitaet dieselbe Zahl sind.
+    xx ist eine XOR-Summe ueber die Nutzlast, kein Zaehler. ADDH/ADDL sind die
+    *Zieladresse*; ein Absender steht im Rahmen nicht.
+
+    netid waehlt die Gruppe, in der der Rahmen unterwegs ist. Ein Empfaenger
+    gibt nur aus, was seine eigene NETID traegt -- ausser bei Broadcast FFFF,
+    der die Netzkennung ueberstimmt. Damit ist die NETID die einzige Stellung,
+    mit der dell gezielt in eine Gruppe sendet, statt sich vom Relais
+    hinuebertragen zu lassen.
     """
     if isinstance(nutz, str):
         nutz = nutz.encode()
@@ -215,7 +292,7 @@ def ebyte_rahmen(nutz, kennung):
         xx ^= b
     xx = (xx ^ 0xA0) & 0xFF
     adr = int(kennung, 16) & 0xFFFF
-    kopf = bytes([EBYTE_MAGIC, EBYTE_KANAL, xx, xx ^ 0xA1, EBYTE_NETID,
+    kopf = bytes([EBYTE_MAGIC, EBYTE_KANAL, xx, xx ^ 0xA1, netid & 0xFF,
                   (adr >> 8) & 0xFF, adr & 0xFF, len(nutz)])
     return kopf + bytes(b ^ EBYTE_XOR for b in nutz)
 
@@ -350,6 +427,14 @@ def handle_rxpk(pkt, args, mq, gesendet=None):
             "absender": absender, "geraet": geraet_zu(absender),
             "ziel": ziel, "zielgeraet": geraet_zu(ziel),
             "netid": ebyte_netid(raw),
+            # Gehoert der Rahmen in unsere Gruppe? dell ist mit --netid selbst
+            # Mitglied einer Gruppe, und ein echter Ebyte-Knoten wuerde genau
+            # nach dieser Regel entscheiden, ob er die Nutzlast ausgibt:
+            # NETID gleich -- oder Rundruf, denn Broadcast hat Vorrang vor der
+            # Netzkennung. Damit ist im Datensatz sichtbar, was ein Knoten
+            # unserer Gruppe tatsaechlich zu sehen bekaeme; ein Original aus
+            # der Nachbargruppe ist "fremd", erst die Relaiskopie "eigen".
+            "fuer_uns": ebyte_fuer_gruppe(raw, args.netid),
             "sprung": sprung, "format": formt, "selbstempfang": selbst,
             "raw": raw.hex(), "text": txt, "t": time.time()}), qos=0)
 
@@ -380,6 +465,10 @@ def main():
                     help="Zieladresse im gesendeten Ebyte-Rahmen. FFFF "
                          "adressiert die ganze Gruppe auf dem Kanal, eine "
                          "konkrete Adresse genau einen Knoten darin")
+    ap.add_argument("--netid", type=netid_lesen, default=EBYTE_NETID,
+                    help="NETID der gesendeten Ebyte-Rahmen, hexadezimal "
+                         "(Vorgabe 00 = Gruppe A, bb = Gruppe B). Einzelne "
+                         "Datagramme am Steuereingang setzen sie mit @bb:")
     ap.add_argument("--no-ebyte", dest="ebyte", action="store_false",
                     help="ungerahmt senden; ein E22/E90 verwirft das, nur fuer "
                          "Gegenstellen die rohes LoRa lesen")
@@ -430,7 +519,7 @@ def main():
              args.id, "an" if args.self_filter else "AUS",
              "als Ebyte-Rahmen" if args.ebyte else "ungerahmt")
 
-    def mit_kennung(roh):
+    def mit_kennung(roh, netid=None, ziel=None):
         """Sendefertig machen.
 
         Im Ebyte-Modus wird gerahmt. Die Adresse im Rahmen ist per Vorgabe
@@ -438,9 +527,14 @@ def main():
         nicht, unabhaengig von seiner eigenen Adresse. Ein Textpraefix waere
         hier doppelt gemoppelt. Sonst wie bisher: Befehle und Antworten tragen
         ihr eigenes Praefix, alles andere bekommt die Absenderkennung voran.
+
+        netid/ziel None = die Vorgaben aus --netid und --ziel; der
+        Steuereingang reicht hier durch, was am Datagramm stand.
         """
         if args.ebyte:
-            roh = ebyte_rahmen(roh, args.sendeadresse)
+            roh = ebyte_rahmen(roh,
+                               args.sendeadresse if ziel is None else ziel,
+                               args.netid if netid is None else netid)
             gesendet.merken(roh)
             return roh
         if roh[:2] in (b"C>", b"A>") or zerlege(roh)[1] is not None:
@@ -450,15 +544,19 @@ def main():
     gesendet = Gesendet()
     warteschlange = []
     if args.send:
-        warteschlange.append(mit_kennung(args.send.encode()))
+        netid, ziel, nutz = praefix_abtrennen(args.send.encode(),
+                                             args.netid, args.sendeadresse)
+        warteschlange.append(mit_kennung(nutz, netid, ziel))
 
     while True:
         bereit, _, _ = select.select([s, ctrl], [], [], 1.0)
         if ctrl in bereit:
             roh, _ = ctrl.recvfrom(4096)
-            roh = mit_kennung(roh)
+            netid, ziel, nutz = praefix_abtrennen(roh, args.netid,
+                                                 args.sendeadresse)
+            roh = mit_kennung(nutz, netid, ziel)
             warteschlange.append(roh)
-            log.info("eingereiht: %r", roh)
+            log.info("eingereiht (NETID %02x, Ziel %s): %r", netid, ziel, roh)
         if s not in bereit:
             continue
         data, peer = s.recvfrom(65535)
