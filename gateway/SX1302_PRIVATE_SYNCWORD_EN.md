@@ -153,8 +153,9 @@ The module wraps the payload even in transparent mode. Note that bytes 2–3
 are a **checksum over the payload, not a counter** — the same payload produces
 a byte-identical frame — and that the whitening key is a constant 0x12, not the
 channel number (the 868 device's channel just happens to be 18 = 0x12; the 433
-device uses channel 23 and still whitens with 0x12). Bytes 5–6 carry the
-sending module's **own** address, which is what makes self-filtering possible:
+device uses channel 23 and still whitens with 0x12). Bytes 5–6 are the frame's
+**destination**, not its sender — an Ebyte frame says who it is *for*, never who
+it came *from*. An earlier revision of this guide had that backwards:
 
 ```
 2C 12 87 26 00 FF FF 07 | 42 40 5D 56 3F 22 21
@@ -164,9 +165,53 @@ byte 0    0x2C   magic
 byte 1    channel number
 byte 2-3  xx, xx ^ 0xA1  where xx = (XOR over all payload bytes) ^ 0xA0
 byte 4    NETID
-byte 5-6  source address of the sending module
+byte 5-6  destination address (FF FF = broadcast)
 byte 7    payload length
 ```
+
+### Addressing: two mechanisms that look like one
+
+Byte 4 and bytes 5–6 do different jobs, and they are easy to conflate — I did,
+for a while.
+
+**The destination address selects a member.** In transparent mode a module
+outputs a frame when the destination equals its own address, or when the
+destination is the broadcast `FF FF`.
+
+**NETID selects a group** — but only as long as the destination is not a
+broadcast. Ebyte states the precedence outright: *"Network code filtering has
+lower priority than broadcast addresses. Even with differing network codes,
+broadcast data can still be received."*
+
+That precedence is the entire trick if you want two groups sharing one channel,
+which in EU868 you have little choice about: channel 18 is 868.125 MHz and
+channel 19 would already be 869.125 MHz, outside the 868.0–868.6 band. So give
+every node the same **non-broadcast** address as a shared network key and
+separate the groups by NETID. Set that address to `FF FF` and the separation is
+gone — both groups collapse into one.
+
+A module in relay mode (`REG3` bit 5) reinterprets `ADDH`/`ADDL`: they are no
+longer an address but a **NETID pair** — *"If data is received from one network,
+it is forwarded to the other network."* Passing a frame through rewrites exactly
+one byte:
+
+```
+2c 12 68 c9 00 22 01 03 …    original,  NETID 00
+2c 12 68 c9 bb 22 01 03 …    forwarded, NETID bb
+```
+
+Checksum, destination and payload are untouched. Two consequences worth planning
+for: a node hears the other group **only** through the relay, never directly
+even when it is in easy range, and cross-group traffic occupies the channel
+twice — which against a 1 % duty cycle is the binding constraint, not
+sensitivity. And do not give two relays the same `ADDH`/`ADDL`: Ebyte warns that
+identical relay pairs cause circular forwarding, which is precisely what a relay
+left at the factory `ADDH = ADDL = 0x00` produces.
+
+None of this reaches the gateway. NETID and destination live *inside* the LoRa
+payload, so an SX1302 on the raw channel hears every group regardless — a
+passive observer of a network it is not a member of, which is usually what you
+want for monitoring.
 
 ## Result
 

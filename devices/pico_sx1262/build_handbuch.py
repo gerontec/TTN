@@ -401,14 +401,16 @@ Byte 0    0x2C   Kennung
 Byte 1    Kanalnummer
 Byte 2-3  xx, xx ^ 0xA1   mit xx = (XOR über alle Nutzlastbytes) ^ 0xA0
 Byte 4    NETID
-Byte 5-6  **eigene** Adresse des sendenden Moduls
+Byte 5-6  Zieladresse des Rahmens (FF FF = Rundruf)
 Byte 7    Länge der Nutzlast</pre>
 <div class="merk">Byte 2–3 sind eine <b>Prüfsumme, kein Zähler</b> — gleiche
 Nutzlast ergibt einen Byte für Byte identischen Rahmen. Und der XOR-Schlüssel
 ist konstant <code>0x12</code>, nicht die Kanalnummer; beim 868er fällt beides
 zufällig zusammen (Kanal 18 = 0x12), der 433er sendet auf Kanal 23 und weißt
-trotzdem mit 0x12. Byte 5–6 tragen die <b>eigene</b> Adresse des Senders —
-darauf beruht die Selbsterkennung.</div>
+trotzdem mit 0x12. Byte 5–6 tragen die <b>Zieladresse</b>, nicht den Absender —
+im Beispiel <code>FF FF</code>, also einen Rundruf; ein Absender steht im
+Rahmen überhaupt nicht. Zusammen mit Byte 4 sind das die beiden Felder, aus
+denen sich das Gruppenkonzept in Kapitel 9 ergibt.</div>
 
 <h3>8.9 Was der Eingriff nicht anfasst</h3>
 <p>Nachgemessen mit einem LA66-USB (EU868 v1.3, bereits gejoint): Uplink auf
@@ -511,9 +513,9 @@ europäischen Unterband ist für eine zweite Gruppe schlicht kein Platz.</p>
 
 <h3>9.3 Deshalb: NETID als Gruppenwähler</h3>
 <pre>Kanal 18 (868.125 MHz)      gemeinsame Funkgruppe
-Adresse 2201                Netzschlüssel, bewusst <b>kein</b> Broadcast
-   ├── NETID 00   E22, dell
-   └── NETID BB   Pico
+Adresse 2201                Netzschlüssel aller Knoten, bewusst <b>kein</b> Broadcast
+   ├── NETID 00   Gruppe A   zehn E22, dell
+   └── NETID BB   Gruppe B   zehn E22
 E90-Relais  ADDH=00 ADDL=BB   einzige Brücke, bidirektional
 Gateway                       ohne NETID, hört alle Gruppen</pre>
 <div class="merk"><b>Die Adresse muss <code>2201</code> sein und darf nicht
@@ -524,7 +526,47 @@ die Gruppen also durchlässig — die NETID filtert nur, solange die Adresse kei
 Broadcast-Adresse ist. Die Adresse dient hier deshalb als gemeinsamer
 Netzschlüssel, die Trennung leistet allein die NETID.</div>
 
-<h3>9.4 Die Weiterleitungsregel</h3>
+<h3>9.4 Zwei Gruppen zu je zehn Knoten</h3>
+<p>Zwanzig E22 verteilen sich auf die beiden Netze. Unterschieden werden sie
+<b>allein</b> durch die NETID — alles Übrige ist über beide Gruppen identisch,
+sonst hört sich niemand.</p>
+<table>
+<tr><th>Register</th><th>Gruppe A</th><th>Gruppe B</th><th>Bedeutung</th></tr>
+<tr><td>NETID (0x02)</td><td><code>00</code></td><td><code>bb</code></td><td>Gruppenwähler</td></tr>
+<tr><td>ADDH/ADDL</td><td><code>22 01</code></td><td><code>22 01</code></td><td>Netzschlüssel, kein Knotenname</td></tr>
+<tr><td>REG0</td><td><code>62</code></td><td><code>62</code></td><td>9600 8N1, Luftrate 2.4k</td></tr>
+<tr><td>REG2</td><td><code>12</code></td><td><code>12</code></td><td>Kanal 18 → 868.125 MHz</td></tr>
+</table>
+<p>Alle zwanzig tragen dieselbe Adresse. Sie ist kein Gerätename, sondern der
+gemeinsame Netzschlüssel; eine Knotenkennung gehört in die <b>Nutzlast</b>,
+nicht ins Adressfeld. Einzeladressierung scheidet im Transparentmodus ohnehin
+aus, siehe 9.8.</p>
+<div class="warn"><b>Nie <code>FFFF</code> ausrollen.</b> Broadcast hat Vorrang
+vor der Netzkennung — mit <code>FFFF</code> fielen die beiden Gruppen zu einer
+zusammen, und jeder Rahmen käme zusätzlich als Relaisdublette an. Der
+Netzschlüssel ist damit nicht Zierrat, sondern die Bedingung dafür, dass die
+NETID überhaupt filtert.</div>
+<p><b>Querverkehr läuft ausschließlich über den Berg.</b> Ein Rahmen aus
+Gruppe A trägt NETID <code>00</code>; ein B-Knoten verwirft ihn, auch wenn er
+ihn mühelos direkt empfängt — erst die Relaiskopie mit NETID <code>bb</code>
+kommt bei ihm an. Zwei Folgen: Querverkehr belegt die Luft doppelt, und er
+endet abends mit dem Relais. Die Solarversorgung ohne Puffer aus Kapitel 5 ist
+damit zugleich die Betriebszeit der Gruppenbrücke. Innerhalb einer Gruppe
+bleibt davon alles unberührt.</p>
+<div class="merk">Werksvorgabe eines E22 ist NETID <code>00</code> <i>und</i>
+Adresse <code>0000</code> — ein fabrikfrisches oder zurückgesetztes Modul liegt
+damit formal in Gruppe A. Mitlesen kann es nicht (<code>0000</code> ist nicht
+der Netzschlüssel), und seine Aussendungen nimmt niemand an; es kostet allein
+Sendezeit. Auf Gruppe B kann der Fall gar nicht eintreten.</div>
+<p>Ausgerollt wird mit <code>python/e22_group_setup.py</code>: Modul in den
+Konfigurationsmodus (E22 <code>M0=1, M1=1</code>), anstecken,
+<code>--group A</code> oder <code>--group B</code>. Das Skript schreibt den
+vollständigen Registerblock, liest ihn zurück, vergleicht byteweise und
+protokolliert jeden Lauf in <code>e22_rollout.log</code>. Hängt am Port ein
+Modul mit gesetztem Relay-Bit, verweigert es die Arbeit — sonst überschreibt
+der erste Rollout das Relais und nimmt die Bergstation aus dem Netz.</p>
+
+<h3>9.5 Die Weiterleitungsregel</h3>
 <p>Im Relaismodus sind <code>ADDH</code>/<code>ADDL</code> keine Adressen mehr,
 sondern das <b>NETID-Paar</b>: <i>„If data is received from one network, it is
 forwarded to the other network."</i> Der E90 steht auf
@@ -543,11 +585,11 @@ not recommended, as it may cause <b>circular forwarding</b>."</i> Das erklärte
 das Echo, das der E22 auf seiner seriellen Seite sah — ein Symptom, kein
 Merkmal.</div>
 
-<h3>9.5 Nachgewiesen</h3>
+<h3>9.6 Nachgewiesen</h3>
 <p>Gleiche Adresse, gleicher Kanal, gleiche Modulation — nur die NETID des
 Senders verschieden:</p>
 <table>
-<tr><th>NETID des Pico</th><th>im Relaispaar?</th><th>E22 (NETID 00)</th></tr>
+<tr><th>NETID des Testsenders</th><th>im Relaispaar?</th><th>E22 (NETID 00)</th></tr>
 <tr><td><code>BB</code></td><td>ja</td><td><b>empfangen</b>, −23 bis −40 dBm</td></tr>
 <tr><td><code>07</code></td><td>nein</td><td><b>Stille</b>, 0 von 4</td></tr>
 </table>
@@ -555,7 +597,7 @@ Senders verschieden:</p>
 die Adresse kein Broadcast ist; über das Relais, weil <code>07</code> in
 keiner Richtung seines Paares liegt.</p>
 
-<h3>9.6 Das Gateway steht außerhalb</h3>
+<h3>9.7 Das Gateway steht außerhalb</h3>
 <p>Der Rohkanal des DLOS8N hat <b>keine NETID</b>. Sie ist ein Byte innerhalb
 der Ebyte-Nutzlast; der SX1302 demoduliert auf der LoRa-Ebene — Frequenz, SF,
 Bandbreite, Syncword — und reicht die Nutzlast unverändert weiter. Er kennt das
@@ -568,7 +610,7 @@ Ebyte-Knoten, während die Überwachung über MQTT beide Gruppen sieht. Nur wenn
 <code>dell/lora_raw.py</code> sendet, entsteht Gruppenzugehörigkeit, und die
 steht dort als <code>EBYTE_NETID</code>.</p>
 
-<h3>9.7 Was damit nicht geht</h3>
+<h3>9.8 Was damit nicht geht</h3>
 <p>Gezielte Einzeladressierung. Ein Rahmen an <code>2201</code> statt an den
 Rundruf kam im Test <b>nicht</b> an. Kapitel 4.1 des Handbuchs steht unter der
 Voraussetzung <i>„in fixed-point mode"</i> — die Endgeräte laufen aber
