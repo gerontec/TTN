@@ -5,10 +5,17 @@
 // Ebyte-Rahmenformat (Magic 2c 12, Pruefbytes, Zieladresse, XOR 0x12).
 //
 // Empfang eng nach RadioLib-Beispiel SX126x_PingPong: DIO1-Interrupt setzt
-// eine Flagge, loop() liest das Paket mit readData() und antwortet sofort
-// mit einem Ebyte-gerahmten Zeitstempel (PONG).
+// eine Flagge, loop() liest das Paket mit readData() und plant Antworten
+// mit Ebyte-gerahmten Zeitstempeln (PONG). Die NETID steht im PONG-Text
+// (N00/NBB), damit der Empfaenger sie an der UART ablesen kann -- der
+// Transparentmodus streicht den Rahmenkopf.
 //
-// USB-Kommandos: diag | tx | boot
+// Relais (Ebyte-Name): wenn RELAIS_ENABLE an ist, wird jeder empfangene
+// Rahmen einmal weitergesendet, mit "R" vor der Nutzlast. Schon weiter-
+// geleitete Rahmen (Nutzlast beginnt mit "R") werden nicht nochmal
+// weitergeleitet -- Schleifenschutz zwischen mehreren Relais.
+//
+// USB-Kommandos: diag | tx | relais [on|off] | boot
 //   boot springt in den ROM-Bootloader (RPI-RP2-Laufwerk fuer firmware.uf2).
 
 #include <Arduino.h>
@@ -26,6 +33,8 @@ extern "C" {
 
 static const uint8_t ZIEL[3] = ADRESSE;          // NETID 00 + Rundruf FFFF
 static const uint8_t ZIEL_BB[3] = ADRESSE_NETIDBB; // NETID BB + Rundruf FFFF
+
+static bool relaisAn = RELAIS_ENABLE;            // zur Laufzeit schaltbar
 
 MbedSPI spi(PIN_MISO, PIN_MOSI, PIN_SCK);
 
@@ -50,7 +59,7 @@ static int transmissionState = RADIOLIB_ERR_NONE;
 // seiner eigenen Aussendung vorbei ist. Kleine Schlange fuer Serien.
 struct AntwortSlot {
   unsigned long faellig;
-  uint8_t rahmen[128];
+  uint8_t rahmen[160];   // 8 Kopfbytes + bis zu 128 Nutzlast ("R"+127)
   size_t len;
 };
 static AntwortSlot antworten[8];
@@ -154,7 +163,8 @@ void setup() {
   sag("E22-Profil aktiv: %.3f MHz SF%d BW%.0f CR4/%d LDRO1 Sync 0x%02X %d dBm\n",
       FREQ_MHZ, LORA_SF, BW_KHZ, LORA_CR, SYNCWORD, POWER_DBM);
   Serial.println("warte auf Pakete -- Antwort je Paket mit Zeitstempel");
-  Serial.println("Kommandos: diag | tx | boot");
+  sag("Relais: %s\n", relaisAn ? "an" : "aus");
+  Serial.println("Kommandos: diag | tx | relais [on|off] | boot");
   diag();
 }
 
@@ -171,6 +181,14 @@ void loop() {
       reset_usb_boot(0, 0);
     } else if (cmd == "diag") {
       diag();
+    } else if (cmd == "relais on") {
+      relaisAn = true;
+      Serial.println("Relais: an");
+    } else if (cmd == "relais off") {
+      relaisAn = false;
+      Serial.println("Relais: aus");
+    } else if (cmd == "relais") {
+      sag("Relais: %s\n", relaisAn ? "an" : "aus");
     } else if (cmd == "tx") {
       char text[64];
       snprintf(text, sizeof(text), "CTEST t=%lu ms", (unsigned long)millis());
@@ -185,8 +203,8 @@ void loop() {
 
   if (millis() - letzterPuls >= 30000) {
     letzterPuls = millis();
-    sag("alive: %lu empfangen, %lu beantwortet, %u in Schlange\n",
-        empfangen, beantwortet, antwortAnzahl);
+    sag("alive: %lu empfangen, %lu beantwortet, %u in Schlange, Relais %s\n",
+        empfangen, beantwortet, antwortAnzahl, relaisAn ? "an" : "aus");
   }
 
   // Faellige Antwort senden, falls der Sender frei ist.
@@ -237,23 +255,43 @@ void loop() {
     char nutz[128];
     if (ebyteEntpacken(buf, len, nutz, sizeof(nutz))) {
       sag("  Ebyte-Rahmen ok: %s\n", nutz);
+      // Relais: den Rahmen einmal weiterschicken, mit "R" vor der Nutzlast.
+      // NETID und Ziel des Originals bleiben erhalten. Rahmen, deren
+      // Nutzlast schon mit "R" beginnt, sind bereits weitergeleitet --
+      // Schleifenschutz zwischen mehreren Relais.
+      if (relaisAn && nutz[0] != 'R') {
+        if (antwortAnzahl >= 8) {
+          sag("  -> Relais verworfen (Schlange voll)\n");
+        } else {
+          char weiter[144];
+          snprintf(weiter, sizeof(weiter), "R%s", nutz);
+          const uint8_t orig[3] = {buf[4], buf[5], buf[6]};
+          AntwortSlot& s = antworten[antwortAnzahl++];
+          s.faellig = millis();            // sofort, vor den PONGs dran
+          s.len = ebyteRahmen(weiter, s.rahmen, orig);
+          sag("  -> Relais (sofort): %s\n", weiter);
+        }
+      }
     }
     // Antwort zweifach einplanen: NETID 00 und NETID BB, je Rundruf FFFF.
     // Die Verzoegerung wartet die Taubheit des Senders nach seiner eigenen
-    // Aussendung ab; das zweite Paket kommt kurz nach dem ersten.
-    char antwort[64];
-    snprintf(antwort, sizeof(antwort), "PONG %lu t=%lu ms",
-             empfangen, (unsigned long)millis());
+    // Aussendung ab; das zweite Paket kommt kurz nach dem ersten. Die
+    // NETID steht zusaetzlich im Text (N00/NBB), weil der Empfaenger den
+    // Rahmenkopf im Transparentmodus nicht sieht.
     const uint8_t* ziele[2] = {ZIEL, ZIEL_BB};
+    const char* netids[2] = {"00", "BB"};
+    char antwort[64];
     for (int i = 0; i < 2; i++) {
       if (antwortAnzahl >= 8) {
         sag("  -> Antwort verworfen (Schlange voll)\n");
         break;
       }
+      snprintf(antwort, sizeof(antwort), "PONG %lu N%s t=%lu ms",
+               empfangen, netids[i], (unsigned long)millis());
       AntwortSlot& s = antworten[antwortAnzahl++];
       s.faellig = millis() + PONG_VERZOEGERUNG_MS + i * 500;
       s.len = ebyteRahmen(antwort, s.rahmen, ziele[i]);
-      sag("  -> geplant (%s NETID): %s\n", i == 0 ? "00" : "BB", antwort);
+      sag("  -> geplant (NETID %s): %s\n", netids[i], antwort);
     }
   } else {
     sag("  nicht beantwortet (Fehler %d)\n", state);

@@ -131,8 +131,10 @@ Die Vermutung, man müsse den Quarzversatz des E22 vorhalten, ist damit
 
 * **Versteckte CRC** — 492 Rahmen prüfen sauber durch, und unsere eigenen
   Rahmen sind mehrfach angekommen. Das Format wird akzeptiert.
-* **Adressfilter** — gesendet wird NETID 00 an Rundruf `FFFF`; der Empfänger
-  steht selbst auf `FFFF` (Monitoradresse, nimmt alles auf dem Kanal).
+* **Adressfilter** — die Zieladresse Rundruf `FFFF` wird angenommen; der
+  Empfänger steht selbst auf `FFFF`. Ausgeschlossen ist damit aber nur der
+  Adressfilter, **nicht** der NETID-Filter — der wurde später separat
+  bewiesen (Gegenprobe mit `PONG … N00/NBB`, unten).
 * **Verschlüsselung** (CRYPT_H/L) — bei gesetztem Schlüssel wären auch die
   eigenen Sendungen des Moduls unlesbar; sie dekodieren aber sauber mit
   XOR 0x12.
@@ -165,18 +167,40 @@ Zwei neue Befunde:
 * **Die E22-UART hängt ein RSSI-Byte an jede Nutzlast an** (Wert − 256 dBm),
   hier `\xec` = −20 dBm. Wer zeilenbasiert liest, zählt die Pakete trotzdem —
   das Byte hat kein Newline, es klebt nur an der Nutzlast.
-* **Verdacht auf NETID-Filter trotz Rundruf.** Von jedem PONG-Paar
-  (00, dann BB 0,5 s später) kam höchstens eine Kopie an, und der E22 steht
-  selbst auf NETID 00 (seine `A n`-Pakete gehen mit NETID 00 raus). Es sieht
-  so aus, als würde der Rundruf FFFF den NETID-Filter **nicht** aushebeln.
-  Aus der UART allein ist das nicht ablesbar — der Transparentmodus streicht
-  den Rahmenkopf. Beweisbar wird es erst, wenn die NETID im Nutztext steht
-  (`PONG 9 N00 …` gegen `PONG 9 NBB …`).
+* **Der NETID-Filter greift trotz Rundruf — bewiesen.** Im Folge-Lauf stand
+  die NETID in der Nutzlast (`PONG 2 N00 …` gegen `PONG 2 NBB …`): die
+  einzigen Pakete, die die E22-UART annahm, waren NETID-00-Kopien; **kein
+  einziger** NBB-Rahmen kam durch. Der Rundruf FFFF hebelt den NETID-Filter
+  also **nicht** aus — entgegen der Prioritätsregel aus dem Handbuch.
 
-Offen bleibt die Aufteilung des Verlusts: PONG 9 und 10 kamen 2,7 s nach
-ihrem `A`-Paket an, PONG 6–8 ebenfalls 2,7 s nach ihrem — und trotzdem
-fehlen sie. Die Taubheit nach eigenem Senden allein erklärt das Muster
-nicht; ein Warmlauf- oder Zustandseffekt des Moduls ist möglich.
+Offen bleibt der ~80%-Verlust selbst bei NETID-00-Rahmen; der Relais-Lauf
+unten zeigt, dass er nichts mit dem Abstand zur eigenen Aussendung zu tun
+hat.
+
+### Relais-Nachweis (19.08., gegen 13:08)
+
+Die Firmware bekam das Relais dazu (Ebyte-Name für die Funktion): jeder
+empfangene Rahmen wird sofort weitergesendet, mit `R` vor der Nutzlast,
+NETID und Ziel unverändert. Rahmen, die schon mit `R` beginnen, werden nicht
+nochmal weitergeleitet (Schleifenschutz). Das Gateway erkennt den Forward am
+`R`-Vorspann und am foff des Pico.
+
+| Rahmensorte | über die Luft (DB) | an der E22-UART |
+|---|---|---|
+| `A n` (E22 selbst) | 5/5 | — |
+| `RA n` (Relais, Pico, +0,17 s) | 5/5 | 1/5 (`RA 2`) |
+| PONG N00 (+2,7 s) | 5/5 | 1/5 (`PONG 2 N00`) |
+| PONG NBB (+3,2 s) | 5/5 | 0/5 |
+
+Zwei Befunde:
+
+* `RA 2` nahm der E22 innerhalb der ersten 0,2 s nach dem Ende seiner
+  eigenen `A 2`-Aussendung an. Das widerspricht dem bisher gemessenen
+  Taubheitsfenster von 1–2 s nach eigener Aussendung.
+* Der ~80%-Verlust trifft NETID-00-Rahmen unabhängig vom Abstand zur
+  eigenen Aussendung (Relais 0,1 s danach, PONG 2,7 s danach) und ballte
+  sich in diesem Lauf in der Mitte. Ursache weiter offen — der nächste
+  Schritt bleibt das Registerlesen (unten).
 
 ### Nächster Schritt
 

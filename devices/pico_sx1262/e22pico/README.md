@@ -1,10 +1,17 @@
 # e22pico — RadioLib-Responder auf dem Pico-LoRa (Waveshare SX1262)
 
 Antwortet auf jedes gehörte Ebyte-Paket mit zwei `PONG`-Zeitstempeln
-(NETID 00 und NETID BB, Rundruf FFFF, 2,5/3,0 s verzögert wegen der
-Taubheit des E22 nach eigenem Senden). Messstand 19.08.2026: der Pico hört
-den E22 5/5; umgekehrt kamen 2/10 PONGs am E22-UART an — Einzelheiten und
-offene Fragen in `../e22spec.md`, Abschnitt 4.
+(NETID 00 und NETID BB, Rundruf FFFF, 2,5/3,0 s verzögert); die NETID steht
+auch im Nutztext (`N00`/`NBB`), weil der Transparentmodus den Rahmenkopf
+streicht. Zusätzlich Relais (Ebyte-Name): jeder empfangene Rahmen wird
+einmal weitergesendet, mit `R` vor der Nutzlast — das Gateway erkennt daran
+den Forward, und schon weitergeleitete Rahmen werden nicht nochmal
+weitergeleitet (Schleifenschutz).
+
+Messstand 19.08.2026: der Pico hört den E22 5/5; alle eigenen Aussendungen
+stehen in der DB. Umgekehrt nimmt der E22 nur ~jeden fünften Rahmen an, und
+zwar ausschließlich NETID-00-Rahmen — der Rundruf FFFF hebelt den NETID-
+Filter nicht aus. Einzelheiten in `../e22spec.md`, Abschnitt 4.
 
 ## Inhalt
 
@@ -37,6 +44,7 @@ Suche über `lsblk`. Der Pico meldet sich nach dem Reboot wieder als
 |---|---|
 | `diag` | Status, Syncword-Register, DeviceErrors, TX-Testrahmen |
 | `tx` | einen Ebyte-Rahmen senden |
+| `relais` / `relais on` / `relais off` | Relais abfragen bzw. schalten (Vorgabe aus `loraparms.h`) |
 | `boot` | in den BOOTSEL-Modus (zum Flashen, s. o.) |
 
 Beim Start sendet die Firmware ihre Parameter als `PARM …`-Beacon über die
