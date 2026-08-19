@@ -616,7 +616,6 @@ selbst. Seit 18.08.2026 sind Gruppe und Ziel Parameter statt Konstanten.</p>
 <tr><td><code>--power</code></td><td><code>14</code></td><td>dBm ERP, 14 = 25 mW</td></tr>
 <tr><td><code>--freq</code> / <code>--txfreq</code></td><td><code>868.125</code> / wie <code>--freq</code></td><td>Rohkanal; <code>--txfreq</code> gleicht den Quarzversatz der Gegenstelle aus</td></tr>
 <tr><td><code>--datr</code></td><td><code>SF11BW500</code></td><td>muss zu <code>chan_Lora_std</code> passen</td></tr>
-<tr><td><code>--prea</code></td><td>Vorgabe des Forwarders (8)</td><td>Präambellänge in Symbolen</td></tr>
 <tr><td><code>--id</code></td><td>letzte vier Hexstellen der MAC (<code>E09C</code>)</td><td>eigene Kennung im Textformat</td></tr>
 <tr><td><code>--ebyte</code></td><td>an</td><td><code>--no-ebyte</code> sendet ungerahmt; ein E22/E90 verwirft das</td></tr>
 <tr><td><code>--self-filter</code></td><td>an</td><td><code>--no-self-filter</code> zeigt die eigenen Aussendungen mit</td></tr>

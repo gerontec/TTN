@@ -327,7 +327,7 @@ def printable(raw):
                       for c in txt) else None
 
 
-def txpk(text, freq, datr, power, prea=None):
+def txpk(text, freq, datr, power):
     """Rohes LoRa senden. ipol=false, sonst hoert kein P2P-Node zu -- die
     invertierte Polaritaet ist eine LoRaWAN-Eigenheit der Downlinks."""
     data = text.encode() if isinstance(text, str) else text
@@ -340,10 +340,9 @@ def txpk(text, freq, datr, power, prea=None):
         "datr": datr,
         "codr": "4/5",
         "ipol": False,
-        # Praeambel. Ohne Angabe nimmt der Forwarder seinen Vorgabewert (8).
-        # Ein Ebyte-Empfaenger braucht genug Symbole zum Einrasten; sendet die
-        # Gegenstelle laenger, als wir es tun, hoert sie uns nie.
-        **({"prea": prea} if prea else {}),
+        # Keine Praeambellaenge: der Forwarder nimmt seine Vorgabe (8). Ein
+        # Versuch mit 64 Symbolen am 18.08.2026 hat die Ebyte-Empfaenger
+        # verstummen lassen, deshalb wird hier nichts mehr gesetzt.
         "size": len(data),
         "data": base64.b64encode(data).decode(),
     }}).encode()
@@ -453,9 +452,6 @@ def main():
     ap.add_argument("--id", default=None,
                     help="eigene Absenderkennung; Vorgabe sind die letzten "
                          "vier Hexstellen der MAC")
-    ap.add_argument("--prea", type=int, default=None,
-                    help="Praeambellaenge in Symbolen; ohne Angabe der "
-                         "Vorgabewert des Forwarders (8)")
     ap.add_argument("--txfreq", type=float, default=None,
                     help="Sendefrequenz in MHz, Vorgabe = --freq. Ein Ebyte "
                          "hoert mit demselben Quarz, mit dem er sendet -- "
@@ -580,10 +576,9 @@ def main():
             if warteschlange:
                 naechste = warteschlange.pop(0)
                 s.sendto(bytes([data[0]]) + token + bytes([PULL_RESP])
-                         + txpk(naechste, args.txfreq, args.datr, args.power, args.prea), peer)
-                log.info("gesendet: %r auf %.4f MHz %s, %d dBm, Praeambel %s",
-                         naechste, args.txfreq, args.datr, args.power,
-                         args.prea or "Vorgabe")
+                         + txpk(naechste, args.txfreq, args.datr, args.power), peer)
+                log.info("gesendet: %r auf %.4f MHz %s, %d dBm",
+                         naechste, args.txfreq, args.datr, args.power)
 
         elif kind == TX_ACK:
             if len(data) > 12:
