@@ -76,7 +76,13 @@ Rahmen — er steht als `foff_hz` in der Datenbank:
 | E22 A (`ttyUSB0`) | ≈ −32 000 Hz | 102 |
 | E22 B (`ttyUSB1`) | ≈ −28 000 Hz | 78 |
 | E90-Relais | ≈ 0 Hz | 179 |
-| Pico SX1262 | ≈ +4 000 Hz | 30 |
+| Pico SX1262 (MicroPython, 18.08.) | ≈ +4 000 Hz | 30 |
+| Pico SX1262 (RadioLib, seit 19.08.) | ≈ −130 Hz | 27 |
+
+Die RadioLib-Firmware richtet den TCXO anders ein als die alte
+MicroPython-Firmware — derselbe Chip, aber der Versatz springt von +4 kHz
+auf −130 Hz. Für die Senderzuordnung bleibt der Abstand zu den E22-Quarzen
+groß genug.
 
 Damit lässt sich ein Original von seiner Weitergabe unterscheiden, auch wenn
 beide byteweise identisch sind: am 18.08. um 17:38:41 steht derselbe Rahmen
@@ -133,6 +139,44 @@ Die Vermutung, man müsse den Quarzversatz des E22 vorhalten, ist damit
 * **WOR-Weckzyklus** — ein Vorspann von 2,46 s, länger als der maximale
   WOR-Zyklus von 2 s, kommt **gar nicht** an (0/2). Wäre der Empfänger
   getaktet, müsste genau das durchgehen.
+
+### RadioLib-Gegenprobe (19.08., nachmittags)
+
+Der Pico hängt jetzt an RadioLib 7.7.1 (C++), eng nach dem offiziellen
+`SX126x_PingPong`-Beispiel: `setDio1Action()` + `startReceive()` + `readData()`
+im Loop. Die Parameter stehen in `e22pico/src/loraparms.h` und werden nach
+jedem Start gelesen; beim Start funkt der Pico sie als `PARM …`-Beacon,
+das Gateway schreibt sie mit.
+
+Test (`e22pico/pico_c_pingpong.py`): E22 A sendet alle 5 s `A n`; der Pico
+plant je Paket zwei `PONG`-Zeitstempel ein, 2,5 s und 3,0 s verzögert (wegen
+der Taubheit des E22 nach eigenem Senden), einen an NETID 00, einen an
+NETID BB, beide an Rundruf FFFF. Ergebnis eines Laufs über 5 Pakete, die DB
+als unabhängiger Empfänger:
+
+* Der Pico hört den E22 **5/5** (RSSI −9…−20 dBm, SNR 6,5–8,2 dB).
+* Alle 10 PONGs gingen korrekt über die Luft — in der DB steht jeder mit
+  CRC ok, `rahmenformat='ebyte'`, foff ≈ −127 Hz (Pico-Quarz).
+* Am E22-UART kamen **2 von 10** an: je genau eine Kopie von PONG 9 und 10.
+  Die acht übrigen fehlen, darunter auch die NETID-00-Kopien von PONG 6–8.
+
+Zwei neue Befunde:
+
+* **Die E22-UART hängt ein RSSI-Byte an jede Nutzlast an** (Wert − 256 dBm),
+  hier `\xec` = −20 dBm. Wer zeilenbasiert liest, zählt die Pakete trotzdem —
+  das Byte hat kein Newline, es klebt nur an der Nutzlast.
+* **Verdacht auf NETID-Filter trotz Rundruf.** Von jedem PONG-Paar
+  (00, dann BB 0,5 s später) kam höchstens eine Kopie an, und der E22 steht
+  selbst auf NETID 00 (seine `A n`-Pakete gehen mit NETID 00 raus). Es sieht
+  so aus, als würde der Rundruf FFFF den NETID-Filter **nicht** aushebeln.
+  Aus der UART allein ist das nicht ablesbar — der Transparentmodus streicht
+  den Rahmenkopf. Beweisbar wird es erst, wenn die NETID im Nutztext steht
+  (`PONG 9 N00 …` gegen `PONG 9 NBB …`).
+
+Offen bleibt die Aufteilung des Verlusts: PONG 9 und 10 kamen 2,7 s nach
+ihrem `A`-Paket an, PONG 6–8 ebenfalls 2,7 s nach ihrem — und trotzdem
+fehlen sie. Die Taubheit nach eigenem Senden allein erklärt das Muster
+nicht; ein Warmlauf- oder Zustandseffekt des Moduls ist möglich.
 
 ### Nächster Schritt
 
@@ -204,6 +248,12 @@ Rumpf.
 
 **`e22_group_setup.py`, Docstring** — Konfigurationsmodus ist M1 = 1, M0 = 0,
 nicht M0 = 1 / M1 = 1. Siehe Abschnitt 4.
+
+**RadioLib, `available()`** — liefert für LoRa immer 0; die Methode gehört zum
+Direct-RX-Pfad (`PhysicalLayer::available()`). Wer sie als „Paket da?"-Frage
+benutzt, empfängt nie etwas. Das korrekte Muster steht im offiziellen
+`SX126x_PingPong`-Beispiel: `setDio1Action()` setzt eine Flagge, `loop()`
+fragt sie ab und holt das Paket mit `readData()`.
 
 ## 7 Was davon in der Datenbank steht
 
