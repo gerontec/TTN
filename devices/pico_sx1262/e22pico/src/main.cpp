@@ -15,8 +15,11 @@
 // geleitete Rahmen (Nutzlast beginnt mit "R") werden nicht nochmal
 // weitergeleitet -- Schleifenschutz zwischen mehreren Relais.
 //
-// USB-Kommandos: diag | tx | relais [on|off] | boot
+// USB-Kommandos: diag | tx | relais [on|off] | src | boot
 //   boot springt in den ROM-Bootloader (RPI-RP2-Laufwerk fuer firmware.uf2).
+//   src gibt den eigenen Quelltext aus -- er liegt mit im Flash, erzeugt von
+//   quelltext_einbetten.py vor jedem Bau. Damit traegt der Knoten seine
+//   Bauvorlage selbst; sie kann nicht mehr nur auf einem Notebook liegen.
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -30,6 +33,8 @@ extern "C" {
 // Alle LoRa-Parameter liegen in loraparms.h -- nach jedem Start (auch nach
 // Stromausfall) gelten ausschliesslich diese Werte.
 #include "loraparms.h"
+// Der eigene Quelltext, vor jedem Bau neu eingebettet.
+#include "quelltext.h"
 
 static const uint8_t ZIEL[3] = ADRESSE;          // NETID 00 + Rundruf FFFF
 static const uint8_t ZIEL_BB[3] = ADRESSE_NETIDBB; // NETID BB + Rundruf FFFF
@@ -164,8 +169,25 @@ void setup() {
       FREQ_MHZ, LORA_SF, BW_KHZ, LORA_CR, SYNCWORD, POWER_DBM);
   Serial.println("warte auf Pakete -- Antwort je Paket mit Zeitstempel");
   sag("Relais: %s\n", relaisAn ? "an" : "aus");
-  Serial.println("Kommandos: diag | tx | relais [on|off] | boot");
+  Serial.println("Kommandos: diag | tx | relais [on|off] | src | boot");
   diag();
+}
+
+// Gibt den eingebetteten Quelltext ueber USB aus. In Haeppchen, weil die
+// CDC-Schnittstelle nur einige hundert Byte auf einmal fasst -- am Stueck
+// verschluckt sie den Rest lautlos.
+static void quelltextAusgeben(const char *name, const char *text) {
+  size_t laenge = strlen(text);
+  sag("---- %s (%u Byte) ----\n", name, (unsigned)laenge);
+  for (size_t i = 0; i < laenge; i += 128) {
+    size_t n = laenge - i < 128 ? laenge - i : 128;
+    Serial.write((const uint8_t *)text + i, n);
+    Serial.flush();
+  }
+  // Zeilenumbruch nur, wenn die Datei nicht ohnehin mit einem endet: so ist
+  // das Ausgelesene byteidentisch mit der Vorlage (`src > main.cpp` genuegt).
+  if (laenge && text[laenge - 1] != '\n') Serial.write('\n');
+  sag("---- Ende %s ----\n", name);
 }
 
 void loop() {
@@ -189,6 +211,9 @@ void loop() {
       Serial.println("Relais: aus");
     } else if (cmd == "relais") {
       sag("Relais: %s\n", relaisAn ? "an" : "aus");
+    } else if (cmd == "src") {
+      quelltextAusgeben(QUELLTEXT_MAIN_NAME, QUELLTEXT_MAIN);
+      quelltextAusgeben(QUELLTEXT_PARMS_NAME, QUELLTEXT_PARMS);
     } else if (cmd == "tx") {
       char text[64];
       snprintf(text, sizeof(text), "CTEST t=%lu ms", (unsigned long)millis());
@@ -256,20 +281,24 @@ void loop() {
     if (ebyteEntpacken(buf, len, nutz, sizeof(nutz))) {
       sag("  Ebyte-Rahmen ok: %s\n", nutz);
       // Relais: den Rahmen einmal weiterschicken, mit "R" vor der Nutzlast.
-      // NETID und Ziel des Originals bleiben erhalten. Rahmen, deren
-      // Nutzlast schon mit "R" beginnt, sind bereits weitergeleitet --
-      // Schleifenschutz zwischen mehreren Relais.
+      // Die NETID wird gekreuzt wie beim E90-DTU (00 <-> BB), damit die
+      // Weiterleitung die andere Gruppe erreicht; das Ziel bleibt erhalten.
+      // Rahmen, deren Nutzlast schon mit "R" beginnt, sind bereits
+      // weitergeleitet -- Schleifenschutz zwischen mehreren Relais.
       if (relaisAn && nutz[0] != 'R') {
         if (antwortAnzahl >= 8) {
           sag("  -> Relais verworfen (Schlange voll)\n");
         } else {
           char weiter[144];
           snprintf(weiter, sizeof(weiter), "R%s", nutz);
-          const uint8_t orig[3] = {buf[4], buf[5], buf[6]};
+          uint8_t netid = buf[4];
+          if (netid == 0x00) netid = 0xBB;
+          else if (netid == 0xBB) netid = 0x00;
+          const uint8_t orig[3] = {netid, buf[5], buf[6]};
           AntwortSlot& s = antworten[antwortAnzahl++];
           s.faellig = millis();            // sofort, vor den PONGs dran
           s.len = ebyteRahmen(weiter, s.rahmen, orig);
-          sag("  -> Relais (sofort): %s\n", weiter);
+          sag("  -> Relais (sofort, NETID %02X): %s\n", netid, weiter);
         }
       }
     }

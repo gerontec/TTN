@@ -45,7 +45,15 @@ Suche über `lsblk`. Der Pico meldet sich nach dem Reboot wieder als
 | `diag` | Status, Syncword-Register, DeviceErrors, TX-Testrahmen |
 | `tx` | einen Ebyte-Rahmen senden |
 | `relais` / `relais on` / `relais off` | Relais abfragen bzw. schalten (Vorgabe aus `loraparms.h`) |
+| `src` | gibt den eigenen Quelltext aus (`main.cpp` + `loraparms.h`, im Flash mitgeliefert) |
 | `boot` | in den BOOTSEL-Modus (zum Flashen, s. o.) |
+
+Der Quelltext liegt mit im Binary: `quelltext_einbetten.py` läuft als
+PlatformIO-Vorstufe und erzeugt vor jedem Bau `src/quelltext.h` aus den
+Quellen. Was `src` ausgibt, ist damit zwangsläufig die Vorlage des laufenden
+Stands — byteidentisch, `src` lässt sich also direkt in eine Datei umlenken.
+Anlass war, dass der geflashte Stand vom 19.08. nur als Arbeitskopie auf einem
+Notebook lag und in keinem Commit.
 
 Beim Start sendet die Firmware ihre Parameter als `PARM …`-Beacon über die
 Luft; das Gateway schreibt ihn in die Datenbank.
