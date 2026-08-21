@@ -14,7 +14,7 @@
 // Switching works over the air from both sides, because the Pico has no WLAN
 // and nobody is plugged into USB up on the mountain:
 //
-//   raw channel -> LoRaWAN   remote command "C>MODUS LORAWAN [minutes]", the
+//   raw channel -> LoRaWAN   remote command "C>MODE LORAWAN [minutes]", the
 //                            same language the Brauneck relay station speaks
 //                            (devices/pico_sx1262/fernwirk.py). The reply
 //                            "A>0E22>..." still goes out on the raw channel,
@@ -38,8 +38,8 @@
 // loop protection between several relays. Remote commands and their answers
 // (C>/A>) are never forwarded, same as in repeater.py.
 //
-// USB commands: diag | tx | relais [on|off] | modus [lora|lorawan] |
-//               lwstat | lwsend <text> | lwreset | src | boot
+// Console commands: diag | tx | relay [on|off] | mode [lora|lorawan] |
+//                   lwstat | lwsend <text> | lwreset | src | boot
 //   boot jumps into the ROM bootloader (RPI-RP2 drive for firmware.uf2).
 //   src prints the node's own source -- it ships inside the flash, generated
 //   by embed_source.py before every build. That way the node carries

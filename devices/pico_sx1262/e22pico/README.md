@@ -39,6 +39,10 @@ mode that was written to flash.
 A mode change requested over the air runs only once the answer to it has been
 sent — otherwise bringing the radio back up would tear the receipt away.
 
+The minute count only takes effect when the mode actually changes. Asking for
+the mode the node is already in (`AT+LORAWAN=1,5` on a node already on
+LoRaWAN) is a no-op, minutes included.
+
 ## AT commands
 
 The node also speaks the command set of the Dragino devices, so it can be
