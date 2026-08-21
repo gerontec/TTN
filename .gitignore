@@ -3,3 +3,4 @@ gateway/guide_en.html
 __pycache__/
 *.pyc
 devices/pico_sx1262/e22pico/src/quelltext.h
+devices/pico_sx1262/e22pico/src/lorawan_geheim.h

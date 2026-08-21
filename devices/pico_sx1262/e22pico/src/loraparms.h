@@ -50,6 +50,13 @@
 // Verzoegerung bleibt einstweilen, sie schadet nicht.
 #define PONG_VERZOEGERUNG_MS  2500
 
+// --- Eigene Stationskennung ------------------------------------------------
+// Vier Hexstellen, und zwar die letzten vier der Geraeteadresse (DevEUI in
+// lorawanparms.h) -- genau wie der TrackerD seine 076C aus a840414f1188076c
+// ableitet und das Gateway seine E09C aus der MAC. Die Kennung wird deshalb
+// nicht hier festgelegt, sondern in main.cpp aus LW_DEV_EUI gerechnet; sie
+// steht in jeder Fernwirk-Antwort (A><ID>>...).
+
 // --- Relais (Ebyte-Name fuer diese Funktion) -------------------------------
 // Wenn an, sendet der Pico jeden empfangenen Rahmen einmal weiter, mit
 // einem "R" vor der Nutzlast. Das "R" kennzeichnet die Weitergabe: das

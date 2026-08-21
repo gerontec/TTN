@@ -1,0 +1,25 @@
+// lorawan_geheim.h.vorlage -- Vorlage fuer den AppKey dieses Knotens.
+//
+// Kopieren nach src/lorawan_geheim.h und den eigenen Schluessel eintragen; die
+// Datei selbst bleibt aus dem Git heraus (.gitignore) und wird auch nicht in
+// den Quelltext im Flash eingebettet, damit `src` an der Konsole den
+// Schluessel nicht ausplaudert. Im Binary steht er trotzdem -- ein Knoten, den
+// jemand mitnimmt, gibt seinen AppKey her. Das ist bei OTAA unvermeidlich.
+//
+// Erzeugen und beide Seiten gleich setzen:
+//
+//   KEY=$(openssl rand -hex 16)
+//   APPKEY=$KEY /home/gh/.venv-chirpstack/bin/python cs_pico.py   # auf dem dell
+//   # dieselben 16 Byte hier eintragen, dann erst bauen
+//
+// Reihenfolge beachten: erst Schluessel, dann `pio run`. Ein Bau davor flasht
+// den Nullplatzhalter aus lorawanparms.h, und der Netzwerkserver meldet dazu
+// nur ein duerres "Invalid MIC".
+
+#ifndef LORAWAN_GEHEIM_H
+#define LORAWAN_GEHEIM_H
+
+#define LW_APP_KEY { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+                     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }
+
+#endif // LORAWAN_GEHEIM_H
