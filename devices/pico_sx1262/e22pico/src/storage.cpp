@@ -1,6 +1,6 @@
-// speicher.cpp -- Ringpuffer ueber vier Flash-Sektoren, siehe speicher.h.
+// storage.cpp -- a ring buffer across four flash sectors, see storage.h.
 
-#include "speicher.h"
+#include "storage.h"
 
 extern "C" {
 #include "hardware/flash.h"
@@ -9,7 +9,7 @@ extern "C" {
 }
 
 #ifndef PICO_FLASH_SIZE_BYTES
-// Der Raspberry Pi Pico hat 2 MB; der mbed-Kern definiert die Groesse nicht.
+// The Raspberry Pi Pico has 2 MB; the mbed core does not define the size.
 #define PICO_FLASH_SIZE_BYTES (2u * 1024u * 1024u)
 #endif
 
@@ -17,19 +17,19 @@ extern "C" {
 #define MAGIC     0x50494B4Fu   // "PIKO"
 #define VERSION   1
 
-// Was tatsaechlich im Flash steht.
+// What actually sits in the flash.
 struct Block {
   uint32_t magic;
   uint16_t version;
-  uint16_t laenge;   // sizeof(Zustand) -- faengt spaetere Strukturaenderungen
-  uint32_t folge;    // hochzaehlend, bestimmt den juengsten Sektor
-  uint32_t pruef;    // CRC32 ueber z
+  uint16_t laenge;   // sizeof(Zustand) -- catches later struct changes
+  uint32_t folge;    // increasing, decides which sector is the youngest
+  uint32_t pruef;    // CRC32 over z
   Zustand  z;
 };
 
-static_assert(sizeof(Block) <= FLASH_SECTOR_SIZE, "Block passt nicht in einen Sektor");
+static_assert(sizeof(Block) <= FLASH_SECTOR_SIZE, "block does not fit into a sector");
 
-// flash_range_program will volle 256-Byte-Seiten aus dem RAM.
+// flash_range_program wants full 256-byte pages from RAM.
 static uint8_t puffer[((sizeof(Block) + FLASH_PAGE_SIZE - 1) / FLASH_PAGE_SIZE) * FLASH_PAGE_SIZE];
 
 static uint32_t letzteFolge = 0;
@@ -40,7 +40,7 @@ static uint32_t sektorOffset(uint8_t i) {
   return PICO_FLASH_SIZE_BYTES - (uint32_t)(SEKTOREN - i) * FLASH_SECTOR_SIZE;
 }
 
-// CRC32 (IEEE, wie zlib) bitweise -- ohne Tabelle, 300 Byte kosten nichts.
+// CRC32 (IEEE, as in zlib) bitwise -- no table, 300 bytes cost nothing.
 static uint32_t crc32(const void *daten, size_t len) {
   const uint8_t *p = (const uint8_t *)daten;
   uint32_t c = 0xFFFFFFFFu;
@@ -81,9 +81,9 @@ bool zustandLaden(Zustand &z) {
 }
 
 bool zustandSichern(const Zustand &z) {
-  if (!gelesen) {                 // ohne vorheriges Laden waere die Folge 0
-    Zustand egal;                 // und wir wuerden den juengsten Stand
-    zustandLaden(egal);           // ueberschreiben
+  if (!gelesen) {                 // without loading first the sequence would
+    Zustand egal;                 // be 0 and we would overwrite the youngest
+    zustandLaden(egal);           // state
   }
 
   Block b;
@@ -99,15 +99,15 @@ bool zustandSichern(const Zustand &z) {
   memcpy(puffer, &b, sizeof(b));
 
   const uint32_t off = sektorOffset(naechsterSektor);
-  // Waehrend Loeschen und Schreiben darf kein Code aus dem Flash laufen --
-  // der XIP-Bus ist dann tot. Interrupts sperren ist auf dem RP2040 der
-  // vorgeschriebene Weg (rund 40 ms, in denen die USB-Konsole steht).
+  // While erasing and programming, no code may run from flash -- the XIP bus
+  // is dead during that time. Disabling interrupts is the prescribed way on
+  // the RP2040 (about 40 ms in which the USB console stands still).
   const uint32_t ints = save_and_disable_interrupts();
   flash_range_erase(off, FLASH_SECTOR_SIZE);
   flash_range_program(off, puffer, sizeof(puffer));
   restore_interrupts(ints);
 
-  const Block *frisch = sektor(naechsterSektor);   // Rueckprobe aus dem Flash
+  const Block *frisch = sektor(naechsterSektor);   // read back from flash
   if (!gueltig(frisch) || frisch->folge != b.folge) return false;
 
   letzteFolge = b.folge;
