@@ -357,6 +357,13 @@ static void lorawanJoin() {
     lwBereit = true;
     node.setADR(LW_ADR);
     node.setDatarate(LW_DATARATE);
+    // Class C: the RxC window stays open between uplinks, so downlinks arrive
+    // without waiting for the next uplink. Must be set after activation --
+    // before it there is no session to open the window for.
+    if (LW_CLASS_C) {
+      int16_t c = node.setClass(RADIOLIB_LORAWAN_CLASS_C);
+      sag("LoRaWAN: class C %s\n", c == RADIOLIB_ERR_NONE ? "on" : "FAILED");
+    }
     memcpy(zustand.sitzung, node.getBufferSession(), sizeof(zustand.sitzung));
     zustand.hatSitzung = 1;
     sicherungSchreiben(state == RADIOLIB_LORAWAN_NEW_SESSION ? "join"
@@ -376,19 +383,28 @@ static void lorawanJoin() {
   }
 }
 
-// 8 bytes, big endian: uptime [min], frames received and answered on the raw
-// channel, RSSI and SNR of the last raw packet.
+// ADC in millivolts. analogReadResolution(12) is set once in setup(); the
+// RP2040 ADC would otherwise answer with the Arduino default of 10 bit.
+static uint16_t adcMillivolt() {
+  uint32_t roh = (uint32_t)analogRead(LW_ADC_PIN);      // 0 .. 4095
+  return (uint16_t)((roh * (uint32_t)LW_ADC_REF_MV) / 4095UL);
+}
+
+// 10 bytes, big endian: uptime [min], frames received and answered on the raw
+// channel, RSSI and SNR of the last raw packet, ADC [mV].
 static size_t lorawanNutzlast(uint8_t* out) {
   unsigned long minuten = millis() / 60000UL;
   uint16_t lauf = minuten > 0xFFFF ? 0xFFFF : (uint16_t)minuten;
   uint16_t rx = empfangen > 0xFFFF ? 0xFFFF : (uint16_t)empfangen;
   uint16_t tx = beantwortet > 0xFFFF ? 0xFFFF : (uint16_t)beantwortet;
+  uint16_t adc = adcMillivolt();
   out[0] = (uint8_t)(lauf >> 8); out[1] = (uint8_t)lauf;
   out[2] = (uint8_t)(rx >> 8);   out[3] = (uint8_t)rx;
   out[4] = (uint8_t)(tx >> 8);   out[5] = (uint8_t)tx;
   out[6] = (uint8_t)(int8_t)letzteRssi;
   out[7] = (uint8_t)(int8_t)letzteSnr;
-  return 8;
+  out[8] = (uint8_t)(adc >> 8);  out[9] = (uint8_t)adc;
+  return 10;
 }
 
 // Downlink on the control port: back to the raw channel, optionally timed.
@@ -420,6 +436,15 @@ static void lorawanDownlink(const uint8_t* daten, size_t len, uint8_t port) {
         sag("control command: relay %s\n", relaisAn ? "on" : "off");
       }
       break;
+    case LW_POLL_CMD: {                // poll: answer with an uplink now
+      // Not immediately -- the duty cycle decides when the radio may speak
+      // again. timeUntilUplink() is zero when nothing is pending, otherwise it
+      // is the remaining lock (about 20 s after a DR3 uplink).
+      unsigned long wartet = (unsigned long)node.timeUntilUplink();
+      lwNaechsterUplink = millis() + wartet;
+      sag("control command: poll, uplink in %lu ms\n", wartet);
+      break;
+    }
     default:
       sag("control command unknown: 0x%02x\n", daten[0]);
       break;
@@ -475,9 +500,24 @@ static void lorawanSchleife() {
     if ((long)(millis() - lwNaechsterJoin) >= 0) lorawanJoin();
     return;
   }
+
+  // Class C: whatever arrives outside the two class A windows is picked up
+  // here. Without this call the open RxC window would collect packets that
+  // nobody ever reads.
+  if (LW_CLASS_C) {
+    uint8_t ab[255];
+    size_t abLen = sizeof(ab);
+    LoRaWANEvent_t her;
+    int16_t got = node.getDownlinkClassC(ab, &abLen, &her);
+    if (got > 0) {
+      lwDownlinks++;
+      lorawanDownlink(ab, abLen, her.fPort);
+    }
+  }
+
   if ((long)(millis() - lwNaechsterUplink) < 0) return;
 
-  uint8_t nutz[8];
+  uint8_t nutz[10];
   size_t n = lorawanNutzlast(nutz);
   lorawanUplink(nutz, n, LW_PORT);
 }
@@ -860,6 +900,10 @@ struct Zeilenleser {
 void setup() {
   Serial.begin(115200);
   delay(2000);                  // let USB CDC come up first
+
+  // 12 bit for the measured value in the uplink; the Arduino default would be
+  // 10 bit and would quietly cost two bits of resolution.
+  analogReadResolution(12);
 
   snprintf(stationId, sizeof(stationId), "%04lX",
            (unsigned long)(LW_DEV_EUI & 0xFFFFUL));

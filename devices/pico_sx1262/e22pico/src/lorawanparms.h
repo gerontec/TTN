@@ -68,6 +68,25 @@
 #define LW_ADR            true
 #define LW_CONFIRMED      false   // unconfirmed uplinks, saves downlink time
 
+// Class C keeps the receiver open between uplinks, so a downlink no longer has
+// to wait for the node to speak first -- that is what makes the node pollable
+// over the air: send 0x03 on LW_CONTROL_PORT, get an uplink back within
+// seconds instead of up to LW_INTERVAL_MS. It costs permanent receive current
+// (a few mA on the SX1262), which is why the TrackerD stays class A on its
+// battery while this node, sitting on a supply, can afford it.
+// The ChirpStack device profile must have supports_class_c = True as well,
+// otherwise the server keeps queueing downlinks until the next uplink.
+#define LW_CLASS_C        true
+#define LW_POLL_CMD       0x03    // downlink command: send the payload now
+
+// Measured value that travels with every uplink. GP26 = ADC0 is free on the
+// Waveshare Pico-LoRa: the radio occupies GP2, 3, 10, 11, 12, 15 and 20 only.
+// Sent as millivolts against the 3.3 V reference, 12 bit resolution.
+// For the supply voltage instead, use A3 (GP29 = VSYS/3 on the classic Pico)
+// and multiply by three in the decoder -- one line here, one there.
+#define LW_ADC_PIN        A0
+#define LW_ADC_REF_MV     3300
+
 // The first join attempt happens immediately, after that the pause grows up to
 // LW_JOIN_PAUSE_MAX_MS. A join occupies roughly 1.5 s of air time at DR3; the
 // 1 % duty cycle limit of 868.0-868.6 MHz enforces spacing anyway.

@@ -71,6 +71,10 @@ function decodeUplink(input) {
         decode.Longitude = longitude;
         decode.Hum = hum;
         decode.Tem = tem;
+        // batV wird oben aus Byte 8/9 gerechnet, fiel hier aber unter den Tisch:
+        // der Positions-Uplink (fPort 2) lieferte als einziger Zweig keine
+        // Spannung, obwohl das Geraet sie mitsendet.
+        decode.BatV = batV;
         decode.ALARM_status = alarm;
         decode.MD = mod;
         decode.LON = led_updown;
