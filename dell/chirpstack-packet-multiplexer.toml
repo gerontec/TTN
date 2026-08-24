@@ -1,0 +1,29 @@
+# Der Paket-Multiplexer sitzt vor dem Gateway Bridge und faechert denselben
+# UDP-Strom des DLOS8N auf zwei Netzwerkserver auf.
+#
+# Warum hier und nicht am Gateway: dort haengt der Rohkanal-Syncword an einem
+# angepassten Forwarder (fwd_syncword), der seine Register nach dem Start
+# gesetzt bekommt. Jeder Neustart dort gefaehrdet den Krisenkanal. Auf dem
+# dell ist die Aenderung jederzeit ruecknehmbar.
+#
+#   Gateway :1700 -> Multiplexer -> 127.0.0.1:1710  ChirpStack (lokal)
+#                                -> eu1...:1700     TTN, nur hoerend
+
+[logging]
+  level = "info"
+
+[multiplexer]
+  bind = "0.0.0.0:1700"
+
+  # Lokaler ChirpStack. Behaelt die Downlink-Hoheit: der Krisen-Rundruf haengt
+  # daran, und zwei antwortende Netze wuerden sich mit eigenen FCntDown und im
+  # selben RX-Fenster gegenseitig zerstoeren.
+  [[multiplexer.server]]
+    server = "127.0.0.1:1710"
+    uplink_only = false
+
+  # TTN hoert mit. uplink_only, aus dem Grund direkt darueber -- und weil die
+  # TTN-Fair-Use-Richtlinie ohnehin nur 10 Downlinks am Tag vorsieht.
+  [[multiplexer.server]]
+    server = "eu1.cloud.thethings.network:1700"
+    uplink_only = true
