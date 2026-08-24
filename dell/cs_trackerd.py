@@ -101,7 +101,20 @@ p.payload_codec_runtime = api.CodecRuntime.JS
 lst = dp.List(api.ListDeviceProfilesRequest(limit=100, tenant_id=TENANT), metadata=AUTH)
 dp_id = next((x.id for x in lst.result if x.name == PROFILE_NAME), None)
 if dp_id:
-    print("[da]  Geraeteprofil existiert bereits")
+    # Der Decoder aendert sich haeufiger als das Profil (zuletzt Longitude und
+    # FixTime im fPort-4-Zweig, ueber den der Datalog nachliefert). Ein zweiter
+    # Lauf soll ihn deshalb nachziehen, sonst muesste man ihn von Hand in die
+    # Weboberflaeche kleben.
+    cur = dp.Get(api.GetDeviceProfileRequest(id=dp_id), metadata=AUTH).device_profile
+    if cur.payload_codec_script != p.payload_codec_script:
+        ureq = api.UpdateDeviceProfileRequest()
+        ureq.device_profile.CopyFrom(cur)
+        ureq.device_profile.payload_codec_script = p.payload_codec_script
+        ureq.device_profile.payload_codec_runtime = api.CodecRuntime.JS
+        dp.Update(ureq, metadata=AUTH)
+        print("[ok]  Geraeteprofil vorhanden, Decoder erneuert")
+    else:
+        print("[da]  Geraeteprofil existiert bereits, Decoder unveraendert")
 else:
     dp_id = dp.Create(preq, metadata=AUTH).id
 print("[ok]  Geraeteprofil", dp_id)

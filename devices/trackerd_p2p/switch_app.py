@@ -21,9 +21,17 @@ als (ota_seq - 1) % 2. Die CRC ist zlib.crc32(ota_seq_le, 0xFFFFFFFF) -
 gegen die echte otadata des Geraets verifiziert.
 
     ./switch_app.py status
-    ./switch_app.py flash            # P2P nach app1 und dorthin booten
+    ./switch_app.py flash            # Image nach app1 und dorthin booten
     ./switch_app.py lorawan          # zurueck auf app0
     ./switch_app.py p2p              # wieder app1 (ohne neu zu flashen)
+
+In app1 muss nicht zwingend P2P liegen. Seit ../lorawan/ dort ist, kann es
+auch die LoRaWAN-Firmware mit Spurpuffer sein:
+
+    ./switch_app.py flash --bin lorawan/.pio/build/trackerd_lorawan/firmware.bin
+
+Die Aktionen 'p2p' und 'lorawan' meinen dann weiterhin nur die Slots: 'p2p'
+= app1 (was gerade dort liegt), 'lorawan' = app0 (Werksfirmware v1.4.8).
 """
 import argparse
 import os
@@ -135,7 +143,7 @@ def main():
     ap.add_argument('action', choices=['status', 'flash', 'p2p', 'lorawan'])
     ap.add_argument('-p', '--port', default=PORT_DEFAULT)
     ap.add_argument('-b', '--baud', type=int, default=BAUD_DEFAULT)
-    ap.add_argument('--bin', default=DEFAULT_BIN, help='P2P-Image fuer "flash"')
+    ap.add_argument('--bin', default=DEFAULT_BIN, help='Image fuer "flash" (Vorgabe: P2P)')
     args = ap.parse_args()
 
     if args.action == 'status':

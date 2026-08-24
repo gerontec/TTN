@@ -41,6 +41,9 @@ SQL = """INSERT INTO loradevice
 SQL_CHAT = """INSERT INTO lorachat (ts, richtung, topic, text, meta)
  VALUES (%s,%s,%s,%s,%s)"""
 
+# Port, auf dem der TrackerD gepufferte Fixes nachliefert (Werksport 4).
+TRACKLOG_PORT = 4
+
 conn = None
 
 
@@ -99,6 +102,30 @@ def zerlege(topic, msg):
     )
 
 
+def expandiere_tracklog(werte, msg):
+    """Ein nachgelieferter Fix traegt seine eigene GPS-Zeit im Rumpf.
+
+    Die Sammelzeile bleibt stehen, zusaetzlich bekommt der Fix eine Zeile mit
+    `dev_time` aus dem Datensatz. Ohne das laege eine nachgelieferte Spur in
+    der Datenbank auf dem Zeitpunkt des Wiedereinbuchens — also genau dort, wo
+    sie nicht war. Nach einem Ueberlauf des Geraetepuffers kommen die
+    Datensaetze ausserdem nicht in zeitlicher Reihenfolge; sortiert wird
+    deshalb ueber `dev_time`, nie ueber `ts`."""
+    obj = msg.get("object") or {}
+    t = obj.get("FixTime")
+    if not t:
+        return
+    try:
+        dev_time = datetime.fromisoformat(
+            t.replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
+    except ValueError:
+        return
+    z = list(werte)
+    z[1] = dev_time
+    z[2] = "up-log"
+    schreibe(SQL, tuple(z), f"up-log {werte[5] or werte[4]} {t}")
+
+
 def richtung(topic):
     """`crisis` geht hinaus, `…/status` ist Betriebsmeldung, der Rest kam herein.
 
@@ -106,7 +133,10 @@ def richtung(topic):
     unter dem Topic, das der Absender selbst gewaehlt hat — deshalb laesst sich
     "hereingekommen" nicht an einer festen Topic-Liste erkennen, sondern nur
     daran, dass es keines der beiden anderen ist."""
-    if topic == "crisis":
+    if topic in ("crisis", "lora/tx"):
+        # lora/tx sind die eigenen Downlinks des Gateways. Sie gehoeren in
+        # dieselbe Tabelle wie das Gehoerte -- sonst laesst sich nie pruefen,
+        # ob ein Rahmen, den wir gesendet haben, auch angekommen ist.
         return "raus"
     if topic.endswith("/status"):
         return "status"
@@ -154,12 +184,22 @@ def on_message(client, userdata, m):
             return
         text = m.payload.decode("utf-8", "replace")
         meta = None
+        d = None
         if text.startswith("{"):
             try:
-                json.loads(text)
-                meta, text = text, None
+                d = json.loads(text)
             except ValueError:
-                pass
+                d = None
+        if isinstance(d, dict) and "raw" in d:
+            # Low-level LoRa-Rohrahmen (Gateway-Dekoder, Topic lora/raw):
+            # den dekodierten Klartext in die text-Spalte, die RF- und
+            # Rahmen-Daten (raw, rssi, snr, foff, netid, ziel, ...) bleiben
+            # als JSON in meta. Damit ist der Vergleich, was Pico und E22
+            # wirklich senden, direkt per SQL machbar.
+            text = d.get("text")
+            meta = json.dumps(d, ensure_ascii=False)
+        elif d is not None:
+            meta, text = text, None
         schreibe(SQL_CHAT, (datetime.now(), richtung(m.topic), m.topic, text, meta),
                  f"chat {richtung(m.topic)} {m.topic}: {(text or meta or '')[:80]}")
         return
@@ -175,6 +215,8 @@ def on_message(client, userdata, m):
     werte = zerlege(m.topic, msg)
     schreibe(SQL, werte,
              f"{werte[2]} {werte[5] or werte[4]} fPort {werte[7]} fCnt {werte[8]}")
+    if werte[2] == "up" and werte[7] == TRACKLOG_PORT:
+        expandiere_tracklog(werte, msg)
 
 
 def main():

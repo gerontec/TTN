@@ -1,0 +1,129 @@
+--- /home/gh/python/lora/trackerd/repo/Example/LoRaWAN/examples/TrackerD/TrackerD.ino	2026-08-15 07:17:35.469523253 +0200
++++ src/TrackerD.ino	2026-08-24 09:43:05.106211109 +0200
+@@ -49,6 +49,7 @@
+ RTC_DATA_ATTR int Erase =0;
+ RTC_DATA_ATTR int bg_flag =0;
+ RTC_DATA_ATTR int bg_mode = 1;
++RTC_DATA_ATTR int probe_count = 0;   /* Verbindungsprobe bei Rueckstand, s.u. */
+ void os_getArtEui (u1_t* buf) { sys.LORA_GetAEUI(buf);}
+ 
+ void os_getDevEui (u1_t* buf) { sys.LORA_GetDEUI(buf);}
+@@ -240,6 +241,76 @@
+             break;
+         case EV_TXCOMPLETE: 
+             Serial.println(F("EV_TXCOMPLETE (includes waiting for RX windows)"));
++            /* --- Spur sichern, wenn niemand zugehoert hat ---------------------
++               Das Datalog der Werksfirmware haengt vollstaendig an
++               AT+PNACKMD=1: nur dort wird ueberhaupt bestaetigt gesendet, und
++               nur ein ausbleibendes ACK loest das Sichern aus. Ohne PNACKMD
++               faellt jeder ungehoerte Fix ersatzlos weg - am 23.08.2026 waren
++               das 8 h 38 min Fahrt.
++
++               Dabei hat auch ein unbestaetigter Uplink einen Beleg: bediente
++               er RX1 oder RX2, war das Netz da. Blieben beide Fenster leer,
++               ist er nirgends angekommen und der Fix gehoert in den Puffer.
++               Gespeichert wird in genau demselben 4-KB-Bereich und demselben
++               Format wie beim Werksverfahren - 240 Fixes, rund vier Stunden
++               im Minutentakt - und nachgeliefert wird ueber denselben Weg
++               (fPort 4, waehrend der Nachlieferung TDC 10 s).
++
++               Der Zweig laeuft nur bei PNACKMD=0, damit sich beide Verfahren
++               nie in die Quere kommen. */
++            if(sys.PNACKmd == 0)
++            {
++              uint32_t satzlen = (sys.sensor_type == 22) ? 17 : 15;
++              uint32_t grenze  = (sys.sensor_type == 22) ? 4080 : 4095;
++              uint32_t imPuffer = ((sys.gps_write == grenze) ? grenze : sys.addr_gps_write) / satzlen;
++              bool gehoert = (LMIC.txrxFlags & (TXRX_DNW1 | TXRX_DNW2 | TXRX_ACK)) != 0;
++
++              if(sys.loggpsdata_send == 1)
++              {
++                if(!gehoert)
++                {
++                  /* Der eben gesendete Datensatz ist nicht angekommen: Lesekopf
++                     zurueck, sonst faellt genau dieser Fix unter den Tisch. */
++                  if(sys.addr_gps_read >= satzlen)
++                    sys.addr_gps_read -= satzlen;
++                  sys.loggpsdata_send = 0;
++                  Serial.println("datalog: Netz wieder weg, Nachlieferung angehalten");
++                  sys.config_Write();
++                }
++                else if((sys.gps_write == grenze && sys.addr_gps_read >= grenze) ||
++                        (sys.gps_write != grenze && sys.addr_gps_read >= sys.addr_gps_write))
++                {
++                  sys.GPSDATA_CLEAR();
++                  sys.gps_write       = 0;
++                  sys.addr_gps_read   = 0;
++                  sys.addr_gps_write  = 0;
++                  sys.loggpsdata_send = 0;
++                  Serial.println("datalog: Puffer abgearbeitet");
++                  sys.config_Write();
++                }
++              }
++              else if(!gehoert)
++              {
++                /* Nur der Positions-Uplink wird gesichert. sensor liegt im
++                   RAM und ist nach jedem Deep-Sleep genullt - latitude != 0
++                   heisst also: in diesem Zyklus gab es wirklich einen Fix. */
++                if(sys.sensor_mode == 1 && (sys.port == 2 || sys.port == 3) &&
++                   sensor.latitude != 0)
++                {
++                  sys.gps_data_Weite();
++                  Serial.printf("datalog: Fix gesichert, %u im Puffer\r\n",
++                                (unsigned)(((sys.gps_write == grenze) ? grenze
++                                            : sys.addr_gps_write) / satzlen));
++                }
++              }
++              else if(sys.addr_gps_write >= satzlen || sys.gps_write == grenze)
++              {
++                sys.loggpsdata_send = 1;
++                Serial.printf("datalog: Netz wieder da, %u Fixes werden nachgeliefert\r\n",
++                              (unsigned)imPuffer);
++                sys.config_Write();
++              }
++            }
+             if (LMIC.dataLen)
+             {
+               Serial.print(F("Received:"));
+@@ -1004,7 +1075,23 @@
+           }                    
+         }
+       }        
+-      LMIC_setTxData2(sys.port, mydata, i, sys.frame_flag);
++      /* Liegt etwas im Puffer, wird jeder zehnte Uplink bestaetigt gesendet.
++         Ein unbestaetigter Uplink verraet naemlich nichts ueber die Funklage:
++         ohne diese Probe faellt die Rueckkehr des Netzes nur auf, solange der
++         Krisen-Rundruf Downlinks schickt - das Nachliefern haenge dann an
++         einem fremden Dienst. Mit ihr steht es fuer sich. */
++      uint8_t cnf = sys.frame_flag;
++      if(sys.PNACKmd == 0 && sys.loggpsdata_send == 0 &&
++         (sys.addr_gps_write > 0 || sys.gps_write > 0))
++      {
++        if(++probe_count >= 10)
++        {
++          probe_count = 0;
++          cnf = 1;
++          Serial.println("datalog: Verbindungsprobe (bestaetigter Uplink)");
++        }
++      }
++      LMIC_setTxData2(sys.port, mydata, i, cnf);
+       Serial.println(F("Packet queued"));
+     }
+     // Next TX is scheduled after TX_COMPLETE event.    
+@@ -1329,6 +1416,16 @@
+   print_wakeup_reason();
+ //  button_event_init();
+  device_strcmp();
++  /* Die pico32-Variante des Frameworks legt SCK 18 / MOSI 23 / SS 5 fest, der
++     TrackerD ist aber auf SCK 5 / MOSI 27 / NSS 18 verdrahtet. Ohne das
++     antwortet der SX1276 nicht, radio_init() scheitert und os_init() bleibt
++     in ASSERT(0) stehen - Bootschleife.
++
++     Dragino loest das mit einem Patch an variants/pico32/pins_arduino.h, also
++     an einer geteilten Framework-Datei. Hier reicht es, den Bus vorher selbst
++     mit den richtigen Pins zu oeffnen: LMICs spaeteres SPI.begin() ohne
++     Argumente ist dann wirkungslos (SPIClass::begin: if(_spi) return). */
++  SPI.begin(5, 19, 27, 18);
+ // LMIC init
+   os_init();
+ // Reset the MAC state. Session and pending data transfers will be discarded.

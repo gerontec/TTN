@@ -154,8 +154,17 @@ function decodeUplink(input) {
 
         decode.Location = location;
         decode.Latitude = latitude;
+        // Longitude fiel im Werks-Decoder unter den Tisch - ausgerechnet im
+        // Zweig, der die nachgelieferte Spur bringt.
+        decode.Longitude = longitude;
         decode.Date = date;
         decode.Time = time;
+        // Sortierbar und ohne Ratespiel: die GPS-Zeit des Fixes als ISO-8601
+        // in UTC. Nur daran laesst sich eine nachgelieferte Spur wieder an
+        // die richtige Stelle legen - der Uplink kommt Stunden spaeter.
+        var two = function (v) { return (v < 10 ? '0' : '') + v; };
+        decode.FixTime = year + '-' + two(Month) + '-' + two(day) + 'T' +
+                         two(hour) + ':' + two(min) + ':' + two(sen) + 'Z';
         return {
           data: decode,
         };
