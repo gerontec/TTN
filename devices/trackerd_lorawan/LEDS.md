@@ -62,17 +62,47 @@ verschieden, setzt sie `FDR_flag = 1`, ruft `DATA_CLEAR()` und startet neu.
 > (eeprom1). Nach so einem Wechsel also immer [DATALOG.md](DATALOG.md)
 > nacharbeiten und mit `AT+PNACKMD=?` nachsehen.
 
-## Gruen leuchtet dauerhaft — was dann los ist
+## Gruen leuchtet dauerhaft — fast immer haengt das USB-Kabel dran
 
-Meist ist es kein Dauerlicht, sondern ein sehr schneller Takt. Nach **jedem**
-Kaltstart — und jedes Oeffnen der seriellen Konsole ist ueber DTR/RTS ein
-Kaltstart — setzt `print_wakeup_reason()` `os_JOINED_flag = 1`. Daraus macht
-`sys_sleep()` `sys.tdc = 1000`: ein Zyklus pro Sekunde statt pro TDC. Bei
-`LON=1` blitzt Gruen dann jede Sekunde 200 ms und sieht durchgehend aus. Nach
-dem naechsten regulaeren Zyklus ist der Spuk vorbei.
+**DTR liegt am Alarmknopf (GPIO 0).** Solange die USB-Verbindung steht, kann
+die Leitung den Knopf dauerhaft gedrueckt halten. Die Firmware laeuft dann in
+`attachDuringLongPress()`, und das setzt zweierlei: `LED_PIN_GREEN` auf HIGH
+und `sys.sleep_flag = 1`. Gruen bleibt an, und regulaere Uplinks bleiben aus —
+am 24.08.2026 gemessen: zwischen 09:53:36 und 10:09:59 kein einziger Uplink,
+waehrend das Geraet auf AT-Befehle weiter antwortete.
 
-Dazu kommt, dass `EV_JOINED` Gruen setzt und der Ausschalter am Ende von
-`onEvent()` so aussieht:
+Nachgemessen an der Konsole, beide Richtungen:
+
+    DTR gesetzt   -> "Wakeup caused by external signal using RTC_CNTL"
+    DTR weggenommen -> "attach Long Press Stop" / "Alarm for GPS..."
+                       und ein Uplink auf fPort 7 mit ALARM_status TRUE
+
+Das Loslassen loest also den Alarm aus, den der lange Druck scharf gemacht
+hat. Danach funkt das Geraet 60 Zyklen lang im Alarmtakt `ATDC` (Vorgabe
+60 s), also rund eine Stunde.
+
+**Im Betrieb gehoert das USB-Kabel ab.** Und wer ueber die Konsole neu starten
+will, pulst **RTS** (liegt an EN), niemals DTR:
+
+```python
+s.dtr = False; s.rts = True; time.sleep(0.15); s.rts = False
+```
+
+Ein solcher Reset raeumt den Alarm gleich mit weg: `print_wakeup_reason()`
+setzt bei `INTWK == 0` `sys.alarm = 0`, der Kaltstart-Zweig zusaetzlich
+`alarm_count = 0`.
+
+## Gruen blitzt sekundenweise — nach jedem Reset normal
+
+Nach **jedem** Kaltstart setzt `print_wakeup_reason()` `os_JOINED_flag = 1`.
+Daraus macht `sys_sleep()` `sys.tdc = 1000`: ein Zyklus pro Sekunde statt pro
+TDC. Bei `LON=1` blitzt Gruen dann jede Sekunde 200 ms. Nach dem naechsten
+regulaeren Zyklus ist es vorbei. Zu unterscheiden vom Fall oben: hier blitzt
+es, dort steht es.
+
+## Der Ausschalter, der nur Gruen ausschaltet
+
+Am Ende von `onEvent()` steht:
 
 ```c
 digitalWrite(LED_PIN_RED | LED_PIN_BLUE | LED_PIN_GREEN | LED_PIN_RED1 | LED_PIN_BLUE1, LOW);
