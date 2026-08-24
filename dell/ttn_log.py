@@ -29,6 +29,7 @@ import os
 import re
 import ssl
 import sys
+import urllib.request
 import time
 from datetime import datetime
 
@@ -36,9 +37,11 @@ import paho.mqtt.client as mqtt
 import pymysql
 
 HOST = os.environ.get("TTN_HOST", "eu1.cloud.thethings.network")
-APP = os.environ.get("TTN_APP", "lenggries-sensors")
 TENANT = os.environ.get("TTN_TENANT", "ttn")
 KEYFILE = os.path.expanduser("~/.config/ttn/lenggries.key")
+# APP wird aus dem Schluessel selbst abgeleitet (siehe anwendung()), damit ein
+# neuer Schluessel fuer eine andere Anwendung nicht stillschweigend am falschen
+# Broker landet. TTN_APP in der Umgebung geht vor.
 
 DB = dict(host=os.environ.get("LORA_DB_HOST", "127.0.0.1"),
           user="gh", password="<ENTFERNT>", database="wagodb",
@@ -71,6 +74,25 @@ def key():
     if not m:
         sys.exit(f"kein API-Key in {KEYFILE} gefunden")
     return m.group(0)
+
+
+def anwendung(api_key):
+    """Zu welcher Anwendung der Schluessel gehoert, sagt TTS selbst. Ein
+    fest eingetragener Name geht sonst genau dann daneben, wenn jemand einen
+    Schluessel fuer eine andere Anwendung hinterlegt -- der Broker antwortet
+    dann mit `Not authorized`, ohne zu verraten warum."""
+    if os.environ.get("TTN_APP"):
+        return os.environ["TTN_APP"]
+    req = urllib.request.Request(f"https://{HOST}/api/v3/auth_info",
+                                 headers={"Authorization": "Bearer " + api_key})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        d = json.load(r)
+    app = (((d.get("api_key") or {}).get("entity_ids") or {})
+           .get("application_ids") or {}).get("application_id")
+    if not app:
+        sys.exit("Der Schluessel gehoert zu keiner Anwendung "
+                 "(Gateway-Schluessel? Der kann keine Anwendungsdaten lesen.)")
+    return app
 
 
 def db():
@@ -138,7 +160,7 @@ def zerlege(topic, msg):
         topic,
         (ids.get("dev_eui") or "").lower() or None,
         ids.get("device_id") or None,
-        (ids.get("application_ids") or {}).get("application_id") or APP,
+        (ids.get("application_ids") or {}).get("application_id"),
         up.get("f_port"),
         up.get("f_cnt"),
         1 if up.get("confirmed") else (0 if up else None),
@@ -175,7 +197,7 @@ def on_connect(client, userdata, flags, rc, properties=None):
     if rc != 0:
         log.error("TTS lehnt ab: %s (Key falsch oder Rechte fehlen?)", rc)
         return
-    log.info("verbunden mit %s, Anwendung %s", HOST, APP)
+    log.info("verbunden mit %s, Anwendung %s", HOST, userdata["app"])
     client.subscribe("v3/+/devices/+/#", qos=0)
 
 
@@ -192,8 +214,11 @@ def on_message(client, userdata, m):
 
 
 def main():
-    c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="ttn-log")
-    c.username_pw_set(f"{APP}@{TENANT}", key())
+    api_key = key()
+    app = anwendung(api_key)
+    c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="ttn-log",
+                    userdata={"app": app})
+    c.username_pw_set(f"{app}@{TENANT}", api_key)
     c.tls_set(cert_reqs=ssl.CERT_REQUIRED)
     c.on_connect = on_connect
     c.on_message = on_message

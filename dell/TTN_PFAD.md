@@ -80,6 +80,35 @@ Fuer Logging und Geraeteeintraege braucht es einen zweiten Schluessel auf der
 Ablegen als `TTN_KEY=NNSXS....` in `~/.config/ttn/lenggries.key` auf dem dell,
 dann `sudo systemctl enable --now ttn-log.service`.
 
+## Die Grenze: TTN nimmt nur eigene DevAddr
+
+Der Spiegel-Versuch am 24.08.2026 ist genau hier gescheitert, und zwar nicht
+an einem Konfigurationsfehler:
+
+```
+GET /api/v3/ns/dev_addr_prefixes  ->  {"dev_addr_prefixes": ["260B0000/16"]}
+```
+
+Der Netzwerkserver von TTN verarbeitet **ausschliesslich** Adressen aus
+`260Bxxxx`. Unsere Geraete tragen Adressen aus dem Bereich, den der lokale
+ChirpStack vergibt — `00ECA902`, `018962E0`, `008469BB`. Der Gateway-Server
+von TTS nimmt die Rahmen an (der Zaehler steigt), der Netzwerkserver verwirft
+sie mangels passendem Praefix. Nachgemessen am Pico:
+
+* Schluessel auf beiden Seiten identisch (SHA-256-Fingerabdruecke
+  `516ae1feccde` fuer NwkSKey, `10562b94e5fc` fuer AppSKey)
+* `mac_settings.resets_f_cnt = true` gesetzt
+* TTS-Gateway-Zaehler steigt mit jedem Uplink
+* `session.last_f_cnt_up` bei TTS: **nie gesetzt**
+
+Ein ABP-Spiegel mit einer ChirpStack-Adresse kann also nicht funktionieren.
+Wer ein Geraet in beiden Netzen haben will, muss die **DevAddr von TTN
+vergeben lassen** (ABP-Geraet in der TTN-Konsole anlegen, TTS erzeugt eine aus
+`260B…`) und dieselbe Sitzung anschliessend in ChirpStack **und** im Geraet
+eintragen. Der umgekehrte Weg — erst bei TTN per OTAA joinen und die Sitzung
+lokal nachtragen — wuerde die Sitzungshoheit an TTN abgeben und damit den
+Krisenkanal von einer Aussenverbindung abhaengig machen.
+
 ## Was ueber TTN ankommt — und was nicht
 
 Solange ein Geraet nur im lokalen ChirpStack eingetragen ist, verwirft TTS
