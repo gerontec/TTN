@@ -22,8 +22,6 @@
     server = "127.0.0.1:1710"
     uplink_only = false
 
-  # TTN hoert mit. uplink_only, aus dem Grund direkt darueber -- und weil die
-  # TTN-Fair-Use-Richtlinie ohnehin nur 10 Downlinks am Tag vorsieht.
-  [[multiplexer.server]]
-    server = "eu1.cloud.thethings.network:1700"
-    uplink_only = true
+  # TTN-Backend am 24.08.2026 wieder entfernt: das Gateway sendet selbst an
+  # TTN (server1, trotz "enable": "false" -- der String ist wahr), sonst kaeme
+  # jeder Uplink doppelt bei TTS an.
