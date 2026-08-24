@@ -62,14 +62,24 @@ Puffer geht. Im Funkloch kostet das Sendezeit und Batterie. Waehrend der
 Nachlieferung sind es 3 Versuche, danach geht der Lesekopf einen Datensatz
 zurueck.
 
-**Der Puffer fasst vier Stunden.** 4 KB im NVS, 15 Byte je Datensatz
-(`lat4 lon4 jahr2 mon tag std min sek`) = **240 Fixes**, im Minutentakt rund
-vier Stunden. Danach dreht der Ring und ueberschreibt den aeltesten Teil.
-Bei `sensor_type 22` sind es 17 Byte und 240 Datensaetze.
+**Der Puffer fasst 240 Fixes.** 4 KB im NVS, 15 Byte je Datensatz
+(`lat4 lon4 jahr2 mon tag std min sek`); bei `sensor_type 22` sind es 17 Byte
+und ebenfalls 240 Datensaetze. Wie lange das reicht, haengt allein am
+Sendetakt:
+
+| `AT+TDC` | Reichweite des Puffers |
+|---|---|
+| 60000 (1 min) | rund 4 Stunden |
+| 300000 (5 min) | rund 20 Stunden |
+| **1200000 (20 min)** | **rund 3,3 Tage** |
+
+In Lenggries steht TDC auf 1200000 — ein Funkloch muesste also mehr als drei
+Tage dauern, bevor der Ring dreht und den aeltesten Teil ueberschreibt.
 
 **Nachgeliefert wird auf fPort 4**, ein Datensatz je Uplink — dafuer
 verkuerzt `setup()` den Takt waehrend der Nachlieferung selbst auf **10 s**.
-Vier Stunden Rueckstand sind damit in rund 40 Minuten heraus. In dieser Zeit
+Ein voller Puffer ist damit in rund 40 Minuten heraus, unabhaengig davon,
+ueber welchen Zeitraum er sich gefuellt hat. In dieser Zeit
 bleibt das GPS aus (`gps_start == 2 && loggpsdata_send == 0`), es kommen also
 keine neuen Positionen dazu.
 
