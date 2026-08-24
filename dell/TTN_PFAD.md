@@ -144,6 +144,52 @@ dem dell. Ein Vorbehalt: der AppKey liegt weiterhin auch im ChirpStack. Joint
 das Geraet spaeter von sich aus neu, gewinnt wieder der lokale Server, und die
 Adresse faellt aus dem TTN-Bereich heraus. Dann Schritt 2 bis 4 wiederholen.
 
+## ABP-Geraete gehen den kuerzeren Weg
+
+Der LA66 faehrt ohnehin ABP (`AT+NJM=0`) und braucht den Join-Umweg nicht.
+Fuer ihn wird die Sitzung selbst gewaehlt — DevAddr aus `260B0000/16` — und in
+alle drei Ebenen geschrieben: Geraet, TTN, ChirpStack. Kein Join, also auch
+kein Rennen zwischen den Servern, und nichts, was spaeter von selbst
+zurueckfallen koennte.
+
+```bash
+# im Geraet (9600 Baud): AT+DADDR=260B….  AT+NWKSKEY=…  AT+APPSKEY=…  ATZ
+/home/gh/.venv-chirpstack/bin/python abp_session_apply.py <sitzung.json>
+```
+
+**`ATZ` nicht vergessen**: der LA66 quittiert die drei AT-Befehle mit `OK`,
+benutzt die neue Sitzung aber erst nach dem Neustart. Vorher sendet er weiter
+mit der alten Adresse, und beide Server verwerfen ihn.
+
+## Damit es nicht zurueckfaellt: lokalen Join sperren
+
+Bei Pico und TrackerD liegt der AppKey weiterhin auch im lokalen ChirpStack.
+Joint so ein Geraet spaeter von sich aus neu — nach einem Stromausfall etwa —,
+gewinnt wieder der lokale Server, und die Adresse faellt aus dem TTN-Bereich
+heraus. Dagegen hilft das **Geraeteprofil**: eines mit `supports_otaa = false`
+beantwortet keinen JoinRequest, verarbeitet die ABP-Sitzung aber unveraendert
+weiter.
+
+```bash
+cs_local_join.py <dev_eui> off   # gesperrt: nur TTN darf noch joinen
+cs_local_join.py <dev_eui> on    # zurueck zum OTAA-Profil
+cs_local_join.py <dev_eui>       # nur nachsehen
+```
+
+Das ist der Unterschied zu `cs_device_enable.py`: `is_disabled` schaltet auch
+das Mithoeren ab und taugt nur fuer die paar Sekunden des Umzugs, das Profil
+ist der Dauerzustand.
+
+**Die Empfangsfenster muessen dabei mitwandern.** Ein Geraet, das bei TTN
+gejoint hat, uebernimmt dessen MAC-Parameter — am 24.08.2026 gemessen:
+RX1-Verzoegerung **5 s**, RX2 auf **DR3** und **869,525 MHz**. ChirpStacks
+ABP-Vorgabe ist eine andere; ohne Angleichung sendet der Krisen-Rundruf am
+Fenster vorbei und keine Downlink kommt mehr an. `cs_local_join.py` liest die
+Werte deshalb aus TTS und traegt sie ins neue Profil ein, statt sie zu raten.
+
+Stand 24.08.2026: alle drei Geraete gesperrt (`pico-abp-eu868`,
+`trackerd-abp-eu868`, `la66-abp-eu868`), Uplinks laufen weiter in beide Netze.
+
 ## Was ueber TTN ankommt — und was nicht
 
 Solange ein Geraet nur im lokalen ChirpStack eingetragen ist, verwirft TTS
