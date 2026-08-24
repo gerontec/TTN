@@ -34,9 +34,15 @@ logging.basicConfig(level=logging.INFO,
 log = logging.getLogger("lora_log")
 
 SQL = """INSERT INTO loradevice
- (ts, dev_time, event, topic, dev_eui, dev_name, application, f_port, f_cnt,
-  confirmed, dr, frequency, rssi, snr, gateway_id, payload_hex, decoded, raw)
- VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
+ (ts, dev_time, event, source, topic, dev_eui, dev_name, application, f_port,
+  f_cnt, confirmed, dr, frequency, rssi, snr, gateway_id, payload_hex, decoded,
+  raw)
+ VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
+
+# Herkunft der Zeile. Derselbe Uplink kann ueber beide Netze hereinkommen und
+# steht dann zweimal in der Tabelle -- ohne diese Spalte waere nicht zu sagen,
+# welche Zeile welchen Weg genommen hat.
+SOURCE = "lokal"
 
 SQL_CHAT = """INSERT INTO lorachat (ts, richtung, topic, text, meta)
  VALUES (%s,%s,%s,%s,%s)"""
@@ -84,6 +90,7 @@ def zerlege(topic, msg):
         datetime.now(),
         zeit(msg.get("time")),
         event,
+        SOURCE,
         topic,
         (info.get("devEui") or None),
         (info.get("deviceName") or None),
@@ -214,8 +221,8 @@ def on_message(client, userdata, m):
 
     werte = zerlege(m.topic, msg)
     schreibe(SQL, werte,
-             f"{werte[2]} {werte[5] or werte[4]} fPort {werte[7]} fCnt {werte[8]}")
-    if werte[2] == "up" and werte[7] == TRACKLOG_PORT:
+             f"{werte[2]} {werte[6] or werte[5]} fPort {werte[8]} fCnt {werte[9]}")
+    if werte[2] == "up" and werte[8] == TRACKLOG_PORT:
         expandiere_tracklog(werte, msg)
 
 

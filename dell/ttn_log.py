@@ -15,10 +15,10 @@ Lenggrieser Gymnasium (`B827EBFFFE3CEC15`). Damit laesst sich die Abdeckung
 messen, statt sie zu schaetzen.
 
 Geschrieben wird in `loradevice`, dieselben Spalten wie bei `lora_log.py`.
-Auseinanderhalten lassen sich die beiden Wege an zwei Stellen: `topic` beginnt
-bei TTS mit `v3/`, und `application` traegt das Praefix `ttn:`. Ein Geraet, das
-in beiden Netzen eingetragen ist, erzeugt je Uplink also **zwei** Zeilen — eine
-je Netz. Das ist Absicht: nur so ist vergleichbar, was wer gehoert hat.
+Auseinandergehalten werden die beiden Wege ueber die Spalte `source`: `TTN`
+hier, `lokal` in `lora_log.py`. Ein Geraet, das in beiden Netzen eingetragen
+ist, erzeugt je Uplink **zwei** Zeilen — eine je Netz. Das ist Absicht: nur so
+ist vergleichbar, was wer gehoert hat.
 
     ~/.config/ttn/lenggries.key   TTN_KEY=NNSXS....
 """
@@ -50,9 +50,12 @@ logging.basicConfig(level=logging.INFO,
 log = logging.getLogger("ttn_log")
 
 SQL = """INSERT INTO loradevice
- (ts, dev_time, event, topic, dev_eui, dev_name, application, f_port, f_cnt,
-  confirmed, dr, frequency, rssi, snr, gateway_id, payload_hex, decoded, raw)
- VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
+ (ts, dev_time, event, source, topic, dev_eui, dev_name, application, f_port,
+  f_cnt, confirmed, dr, frequency, rssi, snr, gateway_id, payload_hex, decoded,
+  raw)
+ VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
+
+SOURCE = "TTN"
 
 conn = None
 
@@ -131,10 +134,11 @@ def zerlege(topic, msg):
         datetime.now(),
         zeit(msg.get("received_at") or up.get("received_at")),
         event,
+        SOURCE,
         topic,
         (ids.get("dev_eui") or "").lower() or None,
         ids.get("device_id") or None,
-        "ttn:" + ((ids.get("application_ids") or {}).get("application_id") or APP),
+        (ids.get("application_ids") or {}).get("application_id") or APP,
         up.get("f_port"),
         up.get("f_cnt"),
         1 if up.get("confirmed") else (0 if up else None),
@@ -183,8 +187,8 @@ def on_message(client, userdata, m):
     if not isinstance(msg, dict):
         return
     werte = zerlege(m.topic, msg)
-    schreibe(werte, f"ttn {werte[2]} {werte[5] or werte[4]} "
-                    f"fPort {werte[7]} fCnt {werte[8]} via {werte[14]}")
+    schreibe(werte, f"ttn {werte[2]} {werte[6] or werte[5]} "
+                    f"fPort {werte[8]} fCnt {werte[9]} via {werte[15]}")
 
 
 def main():

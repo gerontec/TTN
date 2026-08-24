@@ -13,6 +13,13 @@ CREATE TABLE IF NOT EXISTS loradevice (
   ts           DATETIME(3)     NOT NULL,   -- Empfang auf dem Broker
   dev_time     DATETIME(3)     NULL,       -- Zeitstempel aus dem Ereignis
   event        VARCHAR(16)     NOT NULL,   -- up | join | ack | txack | status | log
+  -- Ueber welchen Netzwerkserver die Zeile kam. Derselbe Uplink kann ueber
+  -- beide Wege hereinkommen und steht dann zweimal in der Tabelle: 'lokal'
+  -- schreibt lora_log.py (ChirpStack auf dem dell), 'TTN' schreibt
+  -- ttn_log.py (The Things Stack). Ohne die Spalte waere nicht zu sagen,
+  -- welche Zeile welchen Weg genommen hat -- und genau der Vergleich ist der
+  -- Sinn des zweiten Wegs.
+  source       VARCHAR(8)      NULL,
   topic        VARCHAR(255)    NOT NULL,
   dev_eui      CHAR(16)        NULL,
   dev_name     VARCHAR(100)    NULL,
@@ -31,7 +38,8 @@ CREATE TABLE IF NOT EXISTS loradevice (
   PRIMARY KEY (id),
   KEY k_ts (ts),
   KEY k_dev_ts (dev_eui, ts),
-  KEY k_event_ts (event, ts)
+  KEY k_event_ts (event, ts),
+  KEY idx_source (source)
   -- Bewusst *kein* eindeutiger Schluessel auf (dev_eui, f_cnt): der LA66
   -- faengt nach einem Neustart wieder bei 0 an. Ein Unique wuerde die neuen
   -- Uplinks stillschweigend verwerfen — in einem Rohspeicher ist eine
