@@ -62,24 +62,43 @@ Puffer geht. Im Funkloch kostet das Sendezeit und Batterie. Waehrend der
 Nachlieferung sind es 3 Versuche, danach geht der Lesekopf einen Datensatz
 zurueck.
 
-**Der Puffer fasst 240 Fixes.** 4 KB im NVS, 15 Byte je Datensatz
-(`lat4 lon4 jahr2 mon tag std min sek`); bei `sensor_type 22` sind es 17 Byte
-und ebenfalls 240 Datensaetze. Wie lange das reicht, haengt allein am
-Sendetakt:
+**Der Puffer fasst 273 Fixes.** 4 KB im NVS, 15 Byte je Datensatz
+(`lat4 lon4 jahr2 mon tag std min sek`), geschrieben bis `addr_gps_write`
+4095 erreicht: 4095 / 15 = **273**. Bei `sensor_type 22` sind es 17 Byte und
+eine Grenze von 4080, also 240 Datensaetze.
 
-| `AT+TDC` | Reichweite des Puffers |
-|---|---|
-| 60000 (1 min) | rund 4 Stunden |
-| 300000 (5 min) | rund 20 Stunden |
-| **1200000 (20 min)** | **rund 3,3 Tage** |
+**Ein Datensatz je ungehoertem Zyklus** — auch ohne GPS-Fix. Der Puffer
+fuellt sich also im Sendetakt, nicht im Fix-Takt: `sys` liegt im RAM und ist
+nach jedem Deep-Sleep genullt, ein Zyklus ohne Fix legt deshalb einen
+Null-Datensatz ab. Im Tunnel oder in der Tiefgarage verbrennt das Plaetze.
 
-In Lenggries steht TDC auf 1200000 — ein Funkloch muesste also mehr als drei
-Tage dauern, bevor der Ring dreht und den aeltesten Teil ueberschreibt.
+Wie lange das reicht, folgt daraus unmittelbar:
+
+| `AT+TDC` | Zyklus | Puffer voll nach |
+|---|---|---|
+| 60000 (1 min) | 68 s (am 23.08.2026 gemessen) | rund 5 Stunden |
+| 300000 (5 min) | ~5,2 min | rund 1 Tag |
+| **1200000 (20 min)** | ~20,2 min | **rund 3,8 Tage** |
+
+In Lenggries steht TDC auf 1200000. Braucht das GPS unterwegs jedes Mal die
+vollen `FTIME` 180 s, streckt sich der Zyklus und der Puffer haelt eher
+4,4 Tage — die zusaetzlichen Plaetze tragen dann aber leere Datensaetze.
+
+**Wiederholt wird nicht.** In `EV_TXSTART` setzt die Firmware bei `PNACKMD=1`
+ausserhalb der Nachlieferung `LMIC.txCnt = 8`, und LMIC wiederholt nur
+`while (txCnt < TXCONF_ATTEMPTS)` mit `TXCONF_ATTEMPTS = 8`. Der Zaehler
+steht also schon am Anschlag: ein ungehoerter Uplink wird **einmal** gesendet
+und dann gepuffert, statt Sendezeit in acht Versuche zu stecken. Nur waehrend
+der Nachlieferung sind es `txCnt = 3`, also bis zu fuenf Versuche je
+Datensatz.
+
+**Beim Ueberlauf** dreht der Ring und ueberschreibt den aeltesten Teil: die
+juengsten 273 Fixes bleiben, die Fahrt davor ist weg.
 
 **Nachgeliefert wird auf fPort 4**, ein Datensatz je Uplink — dafuer
 verkuerzt `setup()` den Takt waehrend der Nachlieferung selbst auf **10 s**.
-Ein voller Puffer ist damit in rund 40 Minuten heraus, unabhaengig davon,
-ueber welchen Zeitraum er sich gefuellt hat. In dieser Zeit
+Ein voller Puffer ist damit in rund 45 Minuten heraus (273 Datensaetze zu
+10 s), unabhaengig davon, ueber welchen Zeitraum er sich gefuellt hat. In dieser Zeit
 bleibt das GPS aus (`gps_start == 2 && loggpsdata_send == 0`), es kommen also
 keine neuen Positionen dazu.
 
