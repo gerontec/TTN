@@ -109,6 +109,41 @@ eintragen. Der umgekehrte Weg — erst bei TTN per OTAA joinen und die Sitzung
 lokal nachtragen — wuerde die Sitzungshoheit an TTN abgeben und damit den
 Krisenkanal von einer Aussenverbindung abhaengig machen.
 
+## Das Rezept, das funktioniert
+
+Weil die Adresse von TTN kommen **muss**, joint das Geraet dort — und die
+entstandene Sitzung wandert anschliessend in den lokalen ChirpStack. Am
+24.08.2026 am Pico durchgefuehrt, vier Schritte:
+
+```bash
+# 1. Geraet bei TTN als OTAA anlegen, AppKey kommt aus dem lokalen ChirpStack
+/home/gh/.venv-chirpstack/bin/python ttn_otaa.py <dev_eui>
+
+# 2. lokal stummschalten -- sonst gewinnt ChirpStack das Join-Rennen immer
+#    (1,2 ms ueber LAN gegen rund 40 ms nach eu1). is_disabled statt
+#    Schluessel loeschen: ein Aufruf macht es rueckgaengig.
+/home/gh/.venv-chirpstack/bin/python cs_device_enable.py <dev_eui> off
+
+# 3. Geraet neu joinen lassen -- beim Pico ueber die Konsole:
+#    lwreset ; AT+JOIN     -> "LoRaWAN up: DevAddr 260B0BC4, newly joined"
+
+# 4. TTN-Sitzung als ABP zurueck in den ChirpStack, Geraet wieder scharf
+/home/gh/.venv-chirpstack/bin/python cs_abp_from_ttn.py <dev_eui> <ttn_dev_id>
+```
+
+Ergebnis, ein Uplink um 11:47:28:
+
+```
+TTN    pico-0e22  up  fPort 1  f_cnt 1  -84 dBm  A84041FFFF27E318
+lokal  pico-0e22  up  fPort 1  f_cnt 1  -84 dBm  a84041ffff27e318
+```
+
+Ein Rahmen, zwei Netze, unterscheidbar an `source`. Gesendet wird weiterhin
+lokal, ohne dass ein Join noetig waere — die Krisen-Hoheit bleibt damit auf
+dem dell. Ein Vorbehalt: der AppKey liegt weiterhin auch im ChirpStack. Joint
+das Geraet spaeter von sich aus neu, gewinnt wieder der lokale Server, und die
+Adresse faellt aus dem TTN-Bereich heraus. Dann Schritt 2 bis 4 wiederholen.
+
 ## Was ueber TTN ankommt — und was nicht
 
 Solange ein Geraet nur im lokalen ChirpStack eingetragen ist, verwirft TTS
