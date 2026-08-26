@@ -1,0 +1,18 @@
+--- repo148/Example/LoRaWAN/examples/TrackerD/TrackerD.ino	2026-08-26 11:53:52.128842025 +0200
++++ fork148/src/TrackerD.ino	2026-08-26 12:25:20.562998227 +0200
+@@ -1121,6 +1121,15 @@
+ 
+ void setup() {
+ // put your setup code here, to run once:
++  /* Pad-Holds aus dem Schlafpfad loesen, bevor irgendetwas den Bus benutzt.
++     Sonst bleibt MOSI (GPIO 27) nach einem Software-Reset abgeklemmt, der
++     SX1276 antwortet nicht, radio_init() scheitert und os_init() bleibt in
++     ASSERT(0) stehen (oslmic.c:53). Der Werksstand loest die Holds erst im
++     Kaltstartzweig -- der auf dem DATA_CLEAR-Weg vorher neu startet. */
++  gpio_deep_sleep_hold_dis();
++  gpio_hold_dis((gpio_num_t)12);
++  rtc_gpio_hold_dis(GPIO_NUM_27);
++  rtc_gpio_deinit(GPIO_NUM_27);
+   Wire.begin();
+   Serial.begin(115200); 
+   sys.eeprom_init();

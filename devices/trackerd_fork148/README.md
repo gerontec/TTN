@@ -95,3 +95,45 @@ der aktuellen Sitzungsadresse neu gesetzt, und die kommt bei OTAA vom Netz.
 |---|---|
 | app0 | Draginos offizielles Release `v1.5.6/EU868.bin` — als Referenz, Knopf defekt |
 | app1 | Werks-**v1.4.8** aus dem Vollbackup, bootet, `AT+INTWK=1`, `AT+MTDC=180000` |
+
+## Der eine noetige Patch: Pad-Holds beim Start loesen
+
+`patches/TrackerD.ino.patch` — vier Zeilen ganz am Anfang von `setup()`.
+
+Ohne ihn bootet das selbstgebaute Image **genau einmal** und stuerzt danach bei
+jedem Start ab:
+
+    TrackerD ,v1.4.6
+    FAILURE
+    lib/arduino-lmic/src/lmic/oslmic.c:53
+    Guru Meditation Error: Core 1 panic'ed (Interrupt wdt timeout on CPU1)
+
+In dieser LMIC-Fassung kann `os_init_ex()` nur an einer Stelle scheitern: an
+`radio_init()`, das die Versionskennung des SX1276 ueber SPI liest. Der Funk
+antwortet also nicht mehr — und zwar, weil **MOSI abgeklemmt bleibt**.
+
+Vor dem Deep Sleep isoliert die Firmware MOSI (`rtc_gpio_isolate(GPIO_NUM_27)`)
+und haelt GPIO 12 (`gpio_hold_en` + `gpio_deep_sleep_hold_en`). Aufgeraeumt
+wird das erst im Kaltstartzweig von `print_wakeup_reason()` — und der bricht
+auf dem Werksreset-Weg vorher ab:
+
+    if(sys.FDR_flag == 1) { sys.DATA_CLEAR(); ESP.restart(); }   // <- hier raus
+    ...
+    gpio_hold_dis((gpio_num_t)12);      // <- kommt nie dran
+    gpio_deep_sleep_hold_dis();
+
+Ein Software-Reset raeumt RTC-Pad-Holds nicht auf. Deshalb loest der Patch sie
+ganz vorn in `setup()`, bevor irgendetwas den Bus benutzt:
+
+    gpio_deep_sleep_hold_dis();
+    gpio_hold_dis((gpio_num_t)12);
+    rtc_gpio_hold_dis(GPIO_NUM_27);
+    rtc_gpio_deinit(GPIO_NUM_27);
+
+Warum das Werksbinary nicht betroffen ist, ist damit nicht geklaert — es
+ueberlebt denselben Werksreset. Fuer den Fork zaehlt, dass die Ursache
+verstanden und die Behandlung an der richtigen Stelle ist.
+
+**Nachgewiesen am Geraet, 26.08.2026:** drei Neustarts hintereinander ohne
+Absturz, Join auf TTN sensorsa, Statusrahmen `1301 46 01ff0fa240 03` —
+`firm_ver 0x0146` (der Fork) und FLAG `03`, also `Intwk = 1`.
