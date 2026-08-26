@@ -130,8 +130,7 @@ def show_status(port, baud):
         print('-> kein gueltiger Eintrag: Bootloader nimmt den ersten App-Slot (app0/LoRaWAN)')
     else:
         slot = (best_seq - 1) % 2
-        print('-> bootet app%d (%s)' % (slot, 'Werk v1.4.8' if slot == 0
-                                        else 'Bewegungs-Stand v1.5.3'))
+        print('-> bootet app%d' % slot)
 
 
 def write_otadata(port, baud, slot):
@@ -179,10 +178,10 @@ def main():
         print('app1 geflasht und als Bootpartition gesetzt.')
     elif args.action in ('app1', 'p2p'):
         write_otadata(args.port, args.baud, 1)
-        print('Bootpartition = app1 (was dort liegt: Bewegungs-Stand v1.5.3).')
+        print('Bootpartition = app1.')
     else:
         write_otadata(args.port, args.baud, 0)
-        print('Bootpartition = app0 (Dragino-Werksfirmware v1.4.8).')
+        print('Bootpartition = app0.')
 
 
 if __name__ == '__main__':
