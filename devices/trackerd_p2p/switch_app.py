@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TrackerD: zwischen LoRaWAN (app0) und P2P (app1) umschalten.
+"""TrackerD: zwischen den beiden App-Slots umschalten (app0 Werk, app1 eigen).
 
 Der TrackerD hat ab Werk eine OTA-Partitionstabelle mit zwei gleich grossen
 App-Slots, und app1 ist leer:
@@ -7,10 +7,10 @@ App-Slots, und app1 ist leer:
     nvs       0x009000  0x005000
     otadata   0x00E000  0x002000
     app0      0x010000  0x1E0000   <- Dragino LoRaWAN-Firmware
-    app1      0x1F0000  0x1E0000   <- frei, hier landet P2P
+    app1      0x1F0000  0x1E0000   <- frei, hier landet der eigene Stand
     spiffs    0x3D0000  0x030000
 
-Damit braucht P2P die LoRaWAN-Firmware nicht zu verdraengen. Dieses Skript
+Damit braucht der eigene Stand die Werksfirmware nicht zu verdraengen. Dieses Skript
 schreibt ausschliesslich app1 und otadata - Bootloader (0x0), Partitions-
 tabelle (0x8000), app0 und nvs (Keys!) werden nie angefasst.
 
@@ -22,16 +22,20 @@ gegen die echte otadata des Geraets verifiziert.
 
     ./switch_app.py status
     ./switch_app.py flash            # Image nach app1 und dorthin booten
-    ./switch_app.py lorawan          # zurueck auf app0
-    ./switch_app.py p2p              # wieder app1 (ohne neu zu flashen)
+    ./switch_app.py app0             # zurueck auf app0 (alias: lorawan)
+    ./switch_app.py app1             # wieder app1 (alias: p2p), ohne neu zu flashen
 
-In app1 muss nicht zwingend P2P liegen. Seit ../lorawan/ dort ist, kann es
-auch die LoRaWAN-Firmware mit Spurpuffer sein:
+Stand 26.08.2026: in app1 liegt der Bewegungs-Stand aus ../lorawan/ (v1.5.3,
+INTWK=1, MTDC=180000, Spur nur bei Bewegung), und app1 ist die Bootpartition.
+Ein blankes
 
-    ./switch_app.py flash --bin lorawan/.pio/build/trackerd_lorawan/firmware.bin
+    ./switch_app.py flash
 
-Die Aktionen 'p2p' und 'lorawan' meinen dann weiterhin nur die Slots: 'p2p'
-= app1 (was gerade dort liegt), 'lorawan' = app0 (Werksfirmware v1.4.8).
+nimmt deshalb dieses Image. Die P2P-Firmware liegt weiter unter ../p2p/ und
+kaeme mit --bin dorthin zurueck.
+
+Die Aktionen meinen nur die Slots, nicht deren Inhalt: 'app1'/'p2p' = app1
+(was gerade dort liegt), 'app0'/'lorawan' = app0 (Werksfirmware v1.4.8).
 """
 import argparse
 import os
@@ -51,8 +55,26 @@ APP1_ADDR = 0x1F0000
 APP1_SIZE = 0x1E0000
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_BIN = os.path.join(HERE, 'p2p', '.pio', 'build', 'trackerd_p2p',
-                           'firmware.bin')
+
+
+def _erstes_vorhandenes(*pfade):
+    """Erster Pfad, der existiert - sonst der erste als Fehlermeldung."""
+    for pfad in pfade:
+        if os.path.exists(pfad):
+            return pfad
+    return pfade[0]
+
+
+# Seit 26.08.2026 liegt in app1 der Bewegungs-Stand, nicht mehr P2P. Die
+# Vorgabe zeigt deshalb dorthin: ein blankes "flash" darf den laufenden Stand
+# nicht versehentlich durch die alte P2P-Firmware ersetzen. Zwei Ablagen sind
+# im Umlauf - im Repo liegt der Bau unter ../trackerd_lorawan/, auf dem
+# Notebook unter lorawan/ neben diesem Skript.
+DEFAULT_BIN = _erstes_vorhandenes(
+    os.path.join(HERE, 'lorawan', '.pio', 'build', 'trackerd_lorawan',
+                 'firmware.bin'),
+    os.path.join(HERE, os.pardir, 'trackerd_lorawan', '.pio', 'build',
+                 'trackerd_lorawan', 'firmware.bin'))
 
 EMPTY = b'\xff' * SECTOR
 
@@ -108,7 +130,8 @@ def show_status(port, baud):
         print('-> kein gueltiger Eintrag: Bootloader nimmt den ersten App-Slot (app0/LoRaWAN)')
     else:
         slot = (best_seq - 1) % 2
-        print('-> bootet app%d (%s)' % (slot, 'LoRaWAN' if slot == 0 else 'P2P'))
+        print('-> bootet app%d (%s)' % (slot, 'Werk v1.4.8' if slot == 0
+                                        else 'Bewegungs-Stand v1.5.3'))
 
 
 def write_otadata(port, baud, slot):
@@ -140,10 +163,12 @@ def flash_app1(port, baud, binpath):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('action', choices=['status', 'flash', 'p2p', 'lorawan'])
+    ap.add_argument('action', choices=['status', 'flash', 'app1', 'p2p',
+                                       'app0', 'lorawan'])
     ap.add_argument('-p', '--port', default=PORT_DEFAULT)
     ap.add_argument('-b', '--baud', type=int, default=BAUD_DEFAULT)
-    ap.add_argument('--bin', default=DEFAULT_BIN, help='Image fuer "flash" (Vorgabe: P2P)')
+    ap.add_argument('--bin', default=DEFAULT_BIN,
+                    help='Image fuer "flash" (Vorgabe: Bewegungs-Stand aus lorawan/)')
     args = ap.parse_args()
 
     if args.action == 'status':
@@ -152,12 +177,12 @@ def main():
         flash_app1(args.port, args.baud, args.bin)
         write_otadata(args.port, args.baud, 1)
         print('app1 geflasht und als Bootpartition gesetzt.')
-    elif args.action == 'p2p':
+    elif args.action in ('app1', 'p2p'):
         write_otadata(args.port, args.baud, 1)
-        print('Bootpartition = app1 (P2P).')
+        print('Bootpartition = app1 (was dort liegt: Bewegungs-Stand v1.5.3).')
     else:
         write_otadata(args.port, args.baud, 0)
-        print('Bootpartition = app0 (LoRaWAN).')
+        print('Bootpartition = app0 (Dragino-Werksfirmware v1.4.8).')
 
 
 if __name__ == '__main__':

@@ -111,3 +111,28 @@ Der erste Anlauf: ein eigener Ringpuffer im ungenutzten spiffs-Bereich
 Port, dazu ein Testrahmen, der die Ringlogik ohne Geraet prueft (`test/`).
 Funktioniert und ist durchgetestet, war fuer die Aufgabe aber zu gross.
 Liegt hier, falls vier Stunden irgendwann nicht mehr reichen.
+## Bewegungs-Stand (26.08.2026, in app1 geflasht)
+
+Ziel: der Ring soll die Fahrt halten, nicht das Parken. Fuenf Aenderungen
+gegenueber dem Werksstand, alle in `src/`:
+
+* **Bewegungsmodus ist Voreinstellung** (`Intwk = 1`) und der Positionstakt in
+  Bewegung sind **180 s** (`mtdc = 180000`). Beides steht dreifach: als
+  Initialisierer in `common.h`, im Nullwert-Guard von `config_Read()` und im
+  FDR-Zweig von `TrackerD.ino` — der Versionswechsel beim Flashen loest
+  `DATA_CLEAR()` aus, danach kommt alles aus diesem Zweig.
+* **`motion_cycle`** (RTC): 1 bei einer EXT0-Weckung durch den LIS3DH und bei
+  jedem Timer-Wecker des Bewegungstakts (`TDC_flag == 1`), 0 beim
+  Ruhe-Heartbeat auf TDC. Nur bei 1 darf ein ungehoerter Fix in den Ring.
+* **GPS-Suche auch bei `interrupts_flag == 1`**, sofern es ein Bewegungszyklus
+  ist. Der Werksstand ueberspringt die Suche genau in den Zyklen, in denen die
+  Spur entstehen soll — ohne die Ausnahme gaebe es je Fahrt nur beim ersten
+  Ruck einen Fix.
+* **`datalog count:` bei jedem Start**, nicht nur bei `PNACKMD=1`, dazu eine
+  Zeile `INTWK:… MTDC:…`. Das ist der einzige Weg, den Fuellstand am Geraet zu
+  sehen; einen AT-Befehl dafuer gibt es nach wie vor nicht.
+* Gesichert wird ueber die RX-Fenster-Mechanik oben, also bei **`PNACKMD=0`**:
+  keine bestaetigten Uplinks, keine acht Wiederholungen je Fix.
+
+Ruhe bleibt bei `TDC` (20 min) als Heartbeat — die Uplinks gehen weiter raus,
+sie landen nur nicht mehr im Ring.

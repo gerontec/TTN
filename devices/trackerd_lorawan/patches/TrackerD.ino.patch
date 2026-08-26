@@ -1,14 +1,23 @@
 --- /home/gh/python/lora/trackerd/repo/Example/LoRaWAN/examples/TrackerD/TrackerD.ino	2026-08-15 07:17:35.469523253 +0200
-+++ src/TrackerD.ino	2026-08-24 09:43:05.106211109 +0200
-@@ -49,6 +49,7 @@
++++ src/TrackerD.ino	2026-08-26 10:08:51.164626221 +0200
+@@ -49,6 +49,16 @@
  RTC_DATA_ATTR int Erase =0;
  RTC_DATA_ATTR int bg_flag =0;
  RTC_DATA_ATTR int bg_mode = 1;
 +RTC_DATA_ATTR int probe_count = 0;   /* Verbindungsprobe bei Rueckstand, s.u. */
++/* Geht dieser Aufwachzyklus auf Bewegung zurueck? Nur dann darf ein ungehoerter
++   Fix in den Ring - im Stand soll sich der Puffer nicht fuellen. Gesetzt wird
++   das Flag ausschliesslich in print_wakeup_reason(), also bevor gesendet wird:
++   der Beschleunigungssensor weckt ueber EXT0, und jeder Timer-Wecker, den der
++   Bewegungstakt gestellt hat, traegt TDC_flag == 1 (sys_sleep(), Zweig
++   turn_interrupts == 1). Der Ruhe-Heartbeat auf TDC hat TDC_flag == 0.
++   RTC_DATA_ATTR, weil normale Variablen den Deep-Sleep nicht ueberleben. */
++RTC_DATA_ATTR int motion_cycle = 0;
++
  void os_getArtEui (u1_t* buf) { sys.LORA_GetAEUI(buf);}
  
  void os_getDevEui (u1_t* buf) { sys.LORA_GetDEUI(buf);}
-@@ -240,6 +241,76 @@
+@@ -240,6 +250,76 @@
              break;
          case EV_TXCOMPLETE: 
              Serial.println(F("EV_TXCOMPLETE (includes waiting for RX windows)"));
@@ -66,7 +75,7 @@
 +                   RAM und ist nach jedem Deep-Sleep genullt - latitude != 0
 +                   heisst also: in diesem Zyklus gab es wirklich einen Fix. */
 +                if(sys.sensor_mode == 1 && (sys.port == 2 || sys.port == 3) &&
-+                   sensor.latitude != 0)
++                   sensor.latitude != 0 && motion_cycle == 1)
 +                {
 +                  sys.gps_data_Weite();
 +                  Serial.printf("datalog: Fix gesichert, %u im Puffer\r\n",
@@ -85,7 +94,7 @@
              if (LMIC.dataLen)
              {
                Serial.print(F("Received:"));
-@@ -1004,7 +1075,23 @@
+@@ -1004,7 +1084,23 @@
            }                    
          }
        }        
@@ -110,7 +119,62 @@
        Serial.println(F("Packet queued"));
      }
      // Next TX is scheduled after TX_COMPLETE event.    
-@@ -1329,6 +1416,16 @@
+@@ -1123,6 +1219,7 @@
+   {
+     case ESP_SLEEP_WAKEUP_EXT0 : 
+       Serial.println("Wakeup caused by external signal using RTC_IO"); 
++      motion_cycle = 1;
+       if(sys.sensor_type == 22)  
+       {              
+         digitalWrite(LED_PIN_RED1, HIGH);
+@@ -1193,8 +1290,10 @@
+         }       
+ 
+       Serial.println("Wakeup caused by external signal using RTC_CNTL"); 
++      motion_cycle = 0;
+     break;
+     case ESP_SLEEP_WAKEUP_TIMER :     
++    motion_cycle = (TDC_flag == 1) ? 1 : 0;
+     if(sys.Intwk == 1 && button_Count1 != 0 && sys.pedometer == 0 && TDC_flag == 1)
+     {
+       interrupts_flag = 1; 
+@@ -1220,6 +1319,7 @@
+     case ESP_SLEEP_WAKEUP_ULP : Serial.println("Wakeup caused by ULP program"); break;
+     default :
+       Serial.printf("Wakeup was not caused by deep sleep: %d\r\n",wakeup_reason);
++      motion_cycle = 0;
+       if(sys.cdevaddr == 4294967295) 
+       {
+         sys.cdevaddr=sys.LORA_GetDevaddr();
+@@ -1300,6 +1400,12 @@
+         sys.Positioning_time = 180000;
+         sys.exit_alarm_time =2000;
+         sys.beep_flag =0;
++        /* Abweichend vom Werk: Bewegungsmodus an, Positionstakt in Bewegung
++           180 s. Der Zweig laeuft nach jedem DATA_CLEAR - und das loest schon
++           der Versionswechsel beim Flashen aus -, deshalb stehen die beiden
++           Werte hier und nicht nur als Initialisierer in common.h. */
++        sys.Intwk = 1;
++        sys.mtdc = 180000;
+ //        sys.sensor_type =13;
+         sys.TF[0] ={0x14};    
+       }
+@@ -1326,9 +1432,44 @@
+   Serial.begin(115200); 
+   sys.eeprom_init();
+   sys.config_Read();
++  /* Nach einem Werksreset -- und den loest jeder Versionswechsel aus -- steht
++     sensor_type auf 0. Daran haengt mehr, als der Name vermuten laesst:
++     BatGet() liest nur bei 13 oder 22 ueberhaupt einen ADC und liefert sonst
++     0 mV, und weil der GPS-Start an `sensor.bat > 3500` haengt, wird das GPS
++     dann nie eingeschaltet. Auch die Variantenwahl in device_strcmp() greift
++     daneben. Das Geraet hier ist ein TrackerD, also 13; alles ausser 13 und
++     22 ist kein gueltiger Wert. */
++  if (sys.sensor_type != 13 && sys.sensor_type != 22)
++  {
++    sys.sensor_type = 13;
++    sys.config_Write();
++  }
    print_wakeup_reason();
  //  button_event_init();
   device_strcmp();
@@ -123,7 +187,59 @@
 +     an einer geteilten Framework-Datei. Hier reicht es, den Bus vorher selbst
 +     mit den richtigen Pins zu oeffnen: LMICs spaeteres SPI.begin() ohne
 +     Argumente ist dann wirkungslos (SPIClass::begin: if(_spi) return). */
++  /* Der Schlafpfad isoliert GPIO 27 -- das ist MOSI -- und friert die Pads
++     mit gpio_deep_sleep_hold_en() ein. Ein Software-Reset raeumt den
++     RTC-Bereich aber nicht auf: der Halt steht noch, MOSI bleibt tot,
++     radio_init() findet keinen SX1276 und os_init() endet in ASSERT(0).
++     Der folgende Panic loest wieder einen Reset aus, der Halt bleibt --
++     fertig ist die Bootschleife, die sich nicht von selbst loest.
++     Deshalb hier als Erstes alles freigeben, bevor SPI aufgesetzt wird. */
++  gpio_deep_sleep_hold_dis();
++  gpio_hold_dis((gpio_num_t)12);          // GPS-Versorgung
++
++  rtc_gpio_hold_dis(GPIO_NUM_27);
++  rtc_gpio_deinit(GPIO_NUM_27);           // aus dem RTC-Modus zurueckholen
++
 +  SPI.begin(5, 19, 27, 18);
  // LMIC init
    os_init();
  // Reset the MAC state. Session and pending data transfers will be discarded.
+@@ -1379,16 +1520,14 @@
+   sys.sensor_mode = sys.save_sensor_mode;  
+   sensor.bat = BatGet(); 
+   Serial.printf("BAT:%d mV\r\n",sensor.bat);
+-  if(sys.PNACKmd ==1) 
++  /* Werksstand zeigt den Fuellstand nur bei PNACKMD=1 - das hiesige Verfahren
++     laeuft aber gerade bei PNACKMD=0, also immer ausgeben. */
+   {
+-    if(sys.sensor_type == 13)
+-    {
+-     Serial.printf("datalog count:%d\r\n",sys.addr_gps_write/15); 
+-    }
+-    else if(sys.sensor_type == 22)
+-    {
+-      Serial.printf("datalog count:%d\r\n",sys.addr_gps_write/17);
+-    } 
++    uint32_t satzlen = (sys.sensor_type == 22) ? 17 : 15;
++    uint32_t grenze  = (sys.sensor_type == 22) ? 4080 : 4095;
++    Serial.printf("datalog count:%u\r\n",
++                  (unsigned)(((sys.gps_write == grenze) ? grenze : sys.addr_gps_write) / satzlen));
++    Serial.printf("INTWK:%d MTDC:%u\r\n", sys.Intwk, (unsigned)sys.mtdc);
+   }
+   if(sport_mod== 0)
+   {
+@@ -1435,7 +1574,13 @@
+     sensor.longitude = 0xFFFFFFFF;
+     Serial.println("Low voltage,do not start GPS");
+   }   
+-  else if(sys.gps_start == 2 && sys.loggpsdata_send == 0 && interrupts_flag == 0)
++  /* Im Bewegungszyklus wird immer gesucht. Werksstand ueberspringt die
++     GPS-Suche, sobald print_wakeup_reason() interrupts_flag = 1 gesetzt hat -
++     das trifft genau die Timer-Wecker des Bewegungstakts, also die Zyklen, in
++     denen die Spur entstehen soll. Ohne diese Ausnahme gaebe es waehrend einer
++     Fahrt nur beim ersten Ruck einen Fix. */
++  else if(sys.gps_start == 2 && sys.loggpsdata_send == 0 &&
++          (interrupts_flag == 0 || (motion_cycle == 1 && sys.Intwk == 1)))
+   {
+     if(sys.sensor_mode == 1 && bg_mode== 1)
+     {      
