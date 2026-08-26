@@ -159,3 +159,22 @@ Absturz, Join auf TTN sensorsa, Statusrahmen `1301 46 01ff0fa240 03` —
   sensor als Trigger), Positionstakt in Bewegung 180 s (`AT+MTDC=180000`).
 * **Pad-Holds** (MOSI/GPS-Power) werden schon beim Start geloest, bevor LMIC
   das Funkmodul anspricht - sonst ASSERT(0)-Bootschleife nach Software-Reset.
+
+
+## Spurpuffer-Kapazitaet
+
+Der Ring fasst 4095 Byte / 15 Byte je Datensatz (sensor_type 13) =
+**273 Records** (sensor_type 22: 17 Byte je Satz = 240 Records). Gefuellt
+wird er nur mit Fixes, die niemand gehoert hat (beide RX-Fenster leer);
+gehoerte Fixes gehen live raus. Dieselbe Flaeche dient Alarm und
+Bewegungsspur.
+
+* **Sport-Mode** (MTDC 180 s, ein Record je Zyklus): 273 x 3 min =
+  819 min ≈ **13,7 h** — eine Fahrt im 3-Minuten-Takt kommt also rund
+  12-14 h weit. Stop-and-Go mit zusaetzlichen Bewegungswickeln verkuerzt
+  das entsprechend (bei 1 Fix/min waeren es nur ~4,5 h).
+* **Alarm** (ATDC 60 s): 273 min ≈ **4,5 h**.
+
+Nach dem Ueberlauf ringt der Speicher: der aelteste Fix wird ueberschrieben,
+die juengsten stehen dann vorn. Sortierung serverseitig deshalb immer ueber
+die GPS-Zeit im Datensatz (`FixTime`), nie ueber die Ankunftszeit (`ts`).
