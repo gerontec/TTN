@@ -21,7 +21,11 @@ mitnehmen.
 Ergebnis: `.pio/build/trackerd148/firmware.bin`. Geflasht wird vom Notebook
 aus, wo das Geraet haengt:
 
-    ./switch_app.py flash --bin firmware.bin     # app1, Bootpartition mit
+    ~/bin/esptool --port /dev/ttyACM0 --baud 921600 write_flash 0x10000 firmware.bin
+    ./switch_app.py app0                    # Bootwahl auf app0
+
+Seit 26.08.2026 (nachmittags) liegt der Fork in **app0**; die
+Werksfirmware v1.4.8 wurde dort ersetzt.
 
 ## Zwei Dinge, ohne die es nicht baut
 
@@ -137,3 +141,21 @@ verstanden und die Behandlung an der richtigen Stelle ist.
 **Nachgewiesen am Geraet, 26.08.2026:** drei Neustarts hintereinander ohne
 Absturz, Join auf TTN sensorsa, Statusrahmen `1301 46 01ff0fa240 03` —
 `firm_ver 0x0146` (der Fork) und FLAG `03`, also `Intwk = 1`.
+
+
+## Stand 26.08.2026 (nachmittags)
+
+* **Alarmzyklus:** Der Timer-Wecker macht den Zaehlzweig je Aufwachen wieder
+  scharf (`AT+ATDC`-Takt, ab Werk 60 s); `alarm_count` wird in `setup()` nur
+  noch zurueckgesetzt, wenn kein Alarm laeuft - sonst waere Runde 60
+  (Alarm-Ende) nie erreichbar und der Alarm liefe endlos.
+* **GPS-Spurpuffer bei PNACKMD=0:** Blieben beide RX-Fenster leer, ist der
+  Rahmen nirgends angekommen. Der Fix kommt dann in den 4-KB-Ring (Alarm und
+  Bewegungsspur) und wird ueber fPort 4 nachgeliefert, sobald das Netz wieder
+  antwortet. Verbindungsprobe: jeder zehnte Uplink geht bestaetigt raus.
+* **Alarm-Ende** (Runde 60 oder Knopf): Liegt etwas im Puffer, startet die
+  Nachlieferung der Alarmliste sofort.
+* **Ab Werk** (nach Werksreset): Sport-Mode an (`AT+INTWK=1`, Beschleunigungs-
+  sensor als Trigger), Positionstakt in Bewegung 180 s (`AT+MTDC=180000`).
+* **Pad-Holds** (MOSI/GPS-Power) werden schon beim Start geloest, bevor LMIC
+  das Funkmodul anspricht - sonst ASSERT(0)-Bootschleife nach Software-Reset.
