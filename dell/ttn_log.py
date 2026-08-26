@@ -20,6 +20,10 @@ hier, `lokal` in `lora_log.py`. Ein Geraet, das in beiden Netzen eingetragen
 ist, erzeugt je Uplink **zwei** Zeilen — eine je Netz. Das ist Absicht: nur so
 ist vergleichbar, was wer gehoert hat.
 
+Zusaetzlich geht jede Zeile nach heissa.de (MariaDB im Wireguard-Netz),
+solang der Weg traegt — der dortige Report soll nicht auf den naechsten
+Sync-Lauf warten muessen.
+
     ~/.config/ttn/lenggries.key   TTN_KEY=NNSXS....
 """
 import base64
@@ -44,8 +48,17 @@ KEYFILE = os.path.expanduser("~/.config/ttn/lenggries.key")
 # Broker landet. TTN_APP in der Umgebung geht vor.
 
 DB = dict(host=os.environ.get("LORA_DB_HOST", "127.0.0.1"),
-          user="gh", password="<ENTFERNT>", database="wagodb",
+          user="gh", password="a12345", database="wagodb",
           charset="utf8mb4", autocommit=True, connect_timeout=5)
+
+# Zweitspeicher auf heissa.de, erreichbar ueber das Wireguard-Netz. Dieser Weg
+# ist optional: Ohne VPN/Internet darf er den hiesigen Rohspeicher nie stoeren,
+# deshalb gibt db_remote() None zurueck statt einer Exception, und Fehler
+# kommen nur alle zehn Minuten ins Journal. LORA_DB_REMOTE="" schaltet ihn ab.
+REMOTE_HOST = os.environ.get("LORA_DB_REMOTE", "10.9.0.10")
+DB_REMOTE = dict(host=REMOTE_HOST, user="gh", password="a12345",
+                 database="wagodb", charset="utf8mb4", autocommit=True,
+                 connect_timeout=5)
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(message)s",
@@ -54,9 +67,9 @@ log = logging.getLogger("ttn_log")
 
 SQL = """INSERT INTO loradevice
  (ts, dev_time, event, source, topic, dev_eui, dev_name, application, f_port,
-  f_cnt, confirmed, dr, frequency, rssi, snr, gateway_id, payload_hex, decoded,
-  raw)
- VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
+  f_cnt, confirmed, dr, frequency, rssi, snr, gateway_id, gw_lat, gw_lon,
+  payload_hex, decoded, raw)
+ VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
 
 SOURCE = "TTN"
 
@@ -107,6 +120,51 @@ def db():
     return conn
 
 
+conn_remote = None
+_remote_warnung = 0.0
+
+
+def remote_warnen(text):
+    """Ohne Internet scheitert der Zweitweg mit jeder Nachricht — das Journal
+    liefe sofort voll. Deshalb hoechstens alle zehn Minuten eine Meldung."""
+    global _remote_warnung
+    jetzt = time.time()
+    if jetzt >= _remote_warnung:
+        log.warning("Zweitspeicher (heissa.de) nicht erreichbar: %s", text)
+        _remote_warnung = jetzt + 600
+
+
+def db_remote():
+    global conn_remote
+    if not REMOTE_HOST:
+        return None
+    if conn_remote is not None:
+        try:
+            conn_remote.ping(reconnect=True)
+            return conn_remote
+        except pymysql.Error:
+            conn_remote = None
+    try:
+        conn_remote = pymysql.connect(**DB_REMOTE)
+    except pymysql.Error as e:
+        remote_warnen(str(e))
+        return None
+    return conn_remote
+
+
+def schreibe_remote(werte):
+    verbindung = db_remote()
+    if verbindung is None:
+        return
+    try:
+        with verbindung.cursor() as cur:
+            cur.execute(SQL, werte)
+    except pymysql.Error as e:
+        global conn_remote
+        conn_remote = None
+        remote_warnen(str(e))
+
+
 def zeit(s):
     """TTS liefert ISO-8601 mit Zone; die Tabelle fuehrt Ortszeit."""
     if not s:
@@ -148,6 +206,7 @@ def zerlege(topic, msg):
     settings = up.get("settings") or {}
     rx = beste(up.get("rx_metadata") or [])
     gw = (rx.get("gateway_ids") or {})
+    ort = rx.get("location") or {}
     roh = base64.b64decode(up.get("frm_payload", "") or "") if up.get("frm_payload") else b""
     obj = up.get("decoded_payload")
     freq = settings.get("frequency")
@@ -171,6 +230,9 @@ def zerlege(topic, msg):
         # Die Gateway-EUI, nicht die TTS-Kennung: nur so ist ein fremdes
         # Gateway mit dem zu vergleichen, was der lokale Weg meldet.
         (gw.get("eui") or gw.get("gateway_id") or None),
+        # Position desselben Gateways (SOURCE_REGISTRY oder SOURCE_GPS);
+        # fremde Gateways ohne Freigabe bleiben NULL.
+        ort.get("latitude"), ort.get("longitude"),
         roh.hex() if roh else None,
         json.dumps(obj, ensure_ascii=False) if obj else None,
         json.dumps(msg, ensure_ascii=False),
@@ -182,15 +244,16 @@ def schreibe(werte, was):
         try:
             with db().cursor() as cur:
                 cur.execute(SQL, werte)
-            log.info("%s", was)
-            return
+            break
         except pymysql.Error as e:
             global conn
             conn = None
             if versuch == 2:
                 log.error("nicht gespeichert (%s): %s", e, was)
-            else:
-                time.sleep(0.5)
+                return
+            time.sleep(0.5)
+    log.info("%s", was)
+    schreibe_remote(werte)
 
 
 def on_connect(client, userdata, flags, rc, properties=None):

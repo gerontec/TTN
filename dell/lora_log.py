@@ -25,8 +25,17 @@ import pymysql
 # zeigt man mit LORA_BROKER/LORA_DB_HOST auf den dell (192.168.5.23).
 BROKER = os.environ.get("LORA_BROKER", "127.0.0.1")
 DB = dict(host=os.environ.get("LORA_DB_HOST", "127.0.0.1"),
-          user="gh", password="<ENTFERNT>", database="wagodb",
+          user="gh", password="a12345", database="wagodb",
           charset="utf8mb4", autocommit=True, connect_timeout=5)
+
+# Zweitspeicher auf heissa.de, erreichbar ueber das Wireguard-Netz. Dieser Weg
+# ist optional: Ohne VPN/Internet darf er den hiesigen Rohspeicher nie stoeren,
+# deshalb gibt db_remote() None zurueck statt einer Exception, und Fehler
+# kommen nur alle zehn Minuten ins Journal. LORA_DB_REMOTE="" schaltet ihn ab.
+REMOTE_HOST = os.environ.get("LORA_DB_REMOTE", "10.9.0.10")
+DB_REMOTE = dict(host=REMOTE_HOST, user="gh", password="a12345",
+                 database="wagodb", charset="utf8mb4", autocommit=True,
+                 connect_timeout=5)
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(message)s",
@@ -35,9 +44,9 @@ log = logging.getLogger("lora_log")
 
 SQL = """INSERT INTO loradevice
  (ts, dev_time, event, source, topic, dev_eui, dev_name, application, f_port,
-  f_cnt, confirmed, dr, frequency, rssi, snr, gateway_id, payload_hex, decoded,
-  raw)
- VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
+  f_cnt, confirmed, dr, frequency, rssi, snr, gateway_id, gw_lat, gw_lon,
+  payload_hex, decoded, raw)
+ VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
 
 # Herkunft der Zeile. Derselbe Uplink kann ueber beide Netze hereinkommen und
 # steht dann zweimal in der Tabelle -- ohne diese Spalte waere nicht zu sagen,
@@ -64,6 +73,51 @@ def db():
             conn = None
     conn = pymysql.connect(**DB)
     return conn
+
+
+conn_remote = None
+_remote_warnung = 0.0
+
+
+def remote_warnen(text):
+    """Ohne Internet scheitert der Zweitweg mit jeder Nachricht — das Journal
+    liefe sofort voll. Deshalb hoechstens alle zehn Minuten eine Meldung."""
+    global _remote_warnung
+    jetzt = time.time()
+    if jetzt >= _remote_warnung:
+        log.warning("Zweitspeicher (heissa.de) nicht erreichbar: %s", text)
+        _remote_warnung = jetzt + 600
+
+
+def db_remote():
+    global conn_remote
+    if not REMOTE_HOST:
+        return None
+    if conn_remote is not None:
+        try:
+            conn_remote.ping(reconnect=True)
+            return conn_remote
+        except pymysql.Error:
+            conn_remote = None
+    try:
+        conn_remote = pymysql.connect(**DB_REMOTE)
+    except pymysql.Error as e:
+        remote_warnen(str(e))
+        return None
+    return conn_remote
+
+
+def schreibe_remote(sql, werte):
+    verbindung = db_remote()
+    if verbindung is None:
+        return
+    try:
+        with verbindung.cursor() as cur:
+            cur.execute(sql, werte)
+    except pymysql.Error as e:
+        global conn_remote
+        conn_remote = None
+        remote_warnen(str(e))
 
 
 def zeit(s):
@@ -103,6 +157,10 @@ def zerlege(topic, msg):
         rx.get("rssi"),
         rx.get("snr"),
         (rx.get("gatewayId") or None),
+        # Position des Gateways aus rxInfo; Ereignisse ohne rxInfo (join,
+        # status, ...) bleiben NULL.
+        (rx.get("location") or {}).get("latitude"),
+        (rx.get("location") or {}).get("longitude"),
         raw.hex() if raw else None,
         json.dumps(obj, ensure_ascii=False) if obj else None,
         json.dumps(msg, ensure_ascii=False),
@@ -150,13 +208,12 @@ def richtung(topic):
     return "rein"
 
 
-def schreibe(sql, werte, was):
+def schreibe(sql, werte, was, remote=True):
     for versuch in (1, 2):
         try:
             with db().cursor() as cur:
                 cur.execute(sql, werte)
-            log.info("%s", was)
-            return
+            break
         except pymysql.Error as e:
             global conn
             conn = None
@@ -164,8 +221,12 @@ def schreibe(sql, werte, was):
                 # Lieber laut scheitern als still verlieren: die Zeile steht
                 # dann wenigstens im Journal.
                 log.error("nicht gespeichert (%s): %s", e, was)
-            else:
-                time.sleep(0.5)
+                return
+            time.sleep(0.5)
+    log.info("%s", was)
+    # lorachat bleibt hiesig; nur die Geraetezeilen gehen auch nach heissa.de
+    if remote:
+        schreibe_remote(sql, werte)
 
 
 def on_connect(client, userdata, flags, rc, properties=None):
@@ -208,7 +269,8 @@ def on_message(client, userdata, m):
         elif d is not None:
             meta, text = text, None
         schreibe(SQL_CHAT, (datetime.now(), richtung(m.topic), m.topic, text, meta),
-                 f"chat {richtung(m.topic)} {m.topic}: {(text or meta or '')[:80]}")
+                 f"chat {richtung(m.topic)} {m.topic}: {(text or meta or '')[:80]}",
+                 remote=False)
         return
 
     # --- Geraeteereignisse ----------------------------------------------

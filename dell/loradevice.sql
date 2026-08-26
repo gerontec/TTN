@@ -32,6 +32,11 @@ CREATE TABLE IF NOT EXISTS loradevice (
   rssi         SMALLINT        NULL,
   snr          FLOAT           NULL,
   gateway_id   CHAR(16)        NULL,
+  -- Position desselben Gateways. TTS liefert sie je Uplink in rx_metadata
+  -- (SOURCE_REGISTRY oder SOURCE_GPS), ChirpStack im rxInfo. Fremde
+  -- Gateways ohne freigegebene Position bleiben NULL.
+  gw_lat       DOUBLE          NULL,
+  gw_lon       DOUBLE          NULL,
   payload_hex  VARCHAR(1024)   NULL,       -- unentschluesselte Nutzlast, hex
   decoded      LONGTEXT        NULL CHECK (decoded IS NULL OR JSON_VALID(decoded)),
   raw          LONGTEXT        NOT NULL CHECK (JSON_VALID(raw)),
