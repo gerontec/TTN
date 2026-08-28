@@ -134,4 +134,62 @@
 #define LWRPT_DELAY_MS     2000      // the fixed pause before the forward
 #define LWRPT_QUEUE        4         // forwards waiting at most
 
+// --- repeater with an identity (MODE_REPEAT_ID) -----------------------------
+// The fourth mode does everything MODE_REPEAT does and says afterwards which
+// frame it carried. The identification lies NEXT TO the frame, never inside
+// it, and that is not a matter of taste:
+//
+//   MIC = AES-CMAC(NwkSKey, B0 | MHDR | MACPayload)[0:4]
+//
+// The CMAC runs over the whole message, and the B0 block carries its length.
+// A single byte added anywhere breaks it, and the repeater has neither
+// NwkSKey nor AppSKey of the foreign device to recompute anything -- if it
+// had them it would not be a repeater but a man in the middle. A network
+// server answers a modified frame with "No device-session exists for
+// dev_addr", which is exactly what a stale ABP session produces: the mistake
+// would be indistinguishable from the failure of 28 Aug 2026.
+//
+// What can be read without any key is the header. DevAddr sits in bytes 1-4
+// (little endian), FCnt in 6-7, the message type in the top three bits of
+// byte 0. Together with RSSI and SNR that is enough to say afterwards which
+// frame took which path -- the join happens in the database over
+// DevAddr + FCnt + time.
+//
+// The report goes out as the repeater's OWN LoRaWAN uplink, with its own ABP
+// session, on the same frequency and spreading factor as the forwards. It is
+// built by hand (RadioLib's AES, see main.cpp) instead of through the LoRaWAN
+// stack: the stack would open RX1/RX2 and keep the radio busy for seconds,
+// and it would insist on its own duty-cycle bookkeeping. Built by hand the
+// report costs exactly one transmission, the same as a forward.
+//
+// It is a separate mode and not a switch inside MODE_REPEAT so that the
+// return ticket protects it: `C>MODE REPEAT_ID 30` comes back on its own if
+// the reports turn out to cost more than they are worth.
+#define LWRPT_LOG_TIEFE    16        // records kept in the ring buffer
+#define LWRPT_LOG_JEDE     3         // report after n forwards, 0 = no report
+#define LWRPT_ID_PORT      20        // FPort of the report
+
+// The ABP session of the repeater itself. Like the AppKey it belongs in
+// lorawan_secret.h and not into git; without it the node repeats but stays
+// silent about it (checked at runtime, an all-zero key sends nothing).
+//
+// The uplink counter of this session lives in RAM only -- deliberately. A
+// counter in flash would mean a fourth field in Zustand, and a changed struct
+// invalidates every saved sector (storage.cpp checks the length): the node
+// would lose mode, DevNonces and LoRaWAN session in one go, and the next OTAA
+// join would be rejected as a replay. Instead the device carries
+// `skip_fcnt_check` in ChirpStack, which is what that flag is for. The price
+// is that this one device has no replay protection -- for a diagnostic in a
+// private network that is the cheaper side of the trade.
+// lorawan_secret.h is already pulled in above (for LW_APP_KEY); a second
+// include would only repeat every definition. What is missing there falls
+// back to zero here.
+#ifndef LWRPT_ID_DEVADDR
+#define LWRPT_ID_DEVADDR   0x00000000UL
+#define LWRPT_ID_NWKSKEY   { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+                             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }
+#define LWRPT_ID_APPSKEY   { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+                             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }
+#endif
+
 #endif // LORAWANPARMS_H

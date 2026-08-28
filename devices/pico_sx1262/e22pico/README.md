@@ -1,15 +1,30 @@
-# e22pico — one SX1262, three worlds: raw Ebyte channel, LoRaWAN, repeater
+# e22pico — one SX1262, four operating modes
 
-The Waveshare Pico-LoRa (SX1262 on an RP2040) runs **one** firmware with three
-operating modes, switchable at runtime and over the air:
+The Waveshare Pico-LoRa (SX1262 on an RP2040) runs **one** firmware with four
+operating modes. Only one runs at a time — one radio chip, four worlds. The
+selected mode lives in flash and survives a power cut, and every switch works
+**over the air from both sides**, because the node has no WLAN and nobody is
+plugged into USB up on the mountain.
 
-| | `MODE_LORA` (raw channel) | `MODE_LORAWAN` | `MODE_REPEAT` (repeater) |
-|---|---|---|---|
-| radio profile | 868.125 MHz, SF11/BW500, CR4/5, LDRO 1, sync **0x55** | EU868, 867.1–868.5, SF7–12/BW125, sync **0x34** | listens 868.1, sends 867.1, SF9/BW125, sync **0x34** |
-| framing | Ebyte (magic `2c 12`, check bytes, address, XOR `0x12`) | LoRaWAN 1.0.3 class A, OTAA | none — the PHYPayload goes out unchanged |
-| peer | E22 modules, E90 relay, `lora_raw.py` on the dell (UDP 1702) | ChirpStack on the dell (through the DLOS8N, UDP 1700) | any LoRaWAN node in range, and the DLOS8N |
-| encryption | none | AES-128 (AppKey / session keys) | not its business — the MIC of the original stays valid |
-| parameters | [`src/loraparms.h`](src/loraparms.h) | [`src/lorawanparms.h`](src/lorawanparms.h) | [`src/lorawanparms.h`](src/lorawanparms.h), section “repeater” |
+| | `0` `MODE_LORA` | `1` `MODE_LORAWAN` | `2` `MODE_REPEAT` | `3` `MODE_REPEAT_ID` |
+|---|---|---|---|---|
+| **what it is** | the raw Ebyte channel of the crisis network | a normal LoRaWAN node | a repeater that says nothing | the same repeater, and it says what it carried |
+| **radio** | 868.125 MHz, SF11/BW500, CR4/5, LDRO 1, sync **0x55** | EU868, 867.1–868.5, SF7–12/BW125, sync **0x34** | listens 868.1, sends 867.1, SF9/BW125, sync **0x34** | as `MODE_REPEAT` |
+| **framing** | Ebyte (magic `2c 12`, check bytes, address, XOR `0x12`) | LoRaWAN 1.0.3 class A, OTAA | none — the PHYPayload goes out **unchanged** | unchanged too; the report is a **second, separate** frame |
+| **identity** | station id `0E22` = the device address | DevEUI `5049434F00000E22`, OTAA session | **none**, on purpose | its own ABP session, DevAddr `01DE2200`, FPort 20 |
+| **peer** | E22 modules, E90 relay, `lora_raw.py` on the dell (UDP 1702) | ChirpStack on the dell (through the DLOS8N, UDP 1700) | any LoRaWAN node in range, and the DLOS8N | as `MODE_REPEAT`, plus its own uplinks |
+| **can it be talked to?** | yes, `C>…` over the air | yes, downlink on FPort 10 | **no** — only the return ticket brings it back | **no** — same |
+| **parameters** | [`src/loraparms.h`](src/loraparms.h) | [`src/lorawanparms.h`](src/lorawanparms.h) | [`src/lorawanparms.h`](src/lorawanparms.h), “repeater” | same file, “identity” |
+
+The two repeater modes differ in exactly one thing, and it is worth saying
+plainly: **neither of them touches the forwarded frame.** `MODE_REPEAT_ID`
+does not add a byte to it — it sends a *second* frame of its own afterwards.
+Why it cannot be otherwise is in [The repeater](#the-repeater) below.
+
+`MODE_REPEAT_ID` is a separate mode and not a switch inside `MODE_REPEAT` so
+that the **return ticket is the way out**: `C>MODE REPEAT_ID 30` reports for
+half an hour and then goes back on its own. If the reports turn out to cost
+more air time than they are worth, nobody has to climb up the mountain.
 
 The same gateway hears both at the same time: the eight multi-SF channels of
 the DLOS8N stay on 0x34, `chan_Lora_std` sits on 0x55 thanks to the sync word
@@ -24,9 +39,9 @@ measured”).
 
 | way | command | where it is useful |
 |---|---|---|
-| over the air, raw channel | `C>MODE LORAWAN\|LORA\|REPEAT [min]` | the real case: a node without WLAN, radio only |
+| over the air, raw channel | `C>MODE LORAWAN\|LORA\|REPEAT\|REPEAT_ID [min]` | the real case: a node without WLAN, radio only |
 | over the air, LoRaWAN | downlink FPort 10, byte 0 = `0x00` [+ 2 bytes of minutes] | the way back once the node is already on LoRaWAN |
-| USB / UART | `mode lora` \| `mode lorawan` \| `mode repeat`, or `AT+LORAWAN=0|1|2[,min]` | at the desk |
+| USB / UART | `mode lora` \| `mode lorawan` \| `mode repeat` \| `mode repeatid`, or `AT+LORAWAN=0|1|2|3[,min]` | at the desk |
 | by itself | the minute count above | the return ticket, see below |
 
 The return ticket leads back to **the mode the node came from** — with three
@@ -109,12 +124,15 @@ and `la66_mode.py`. The Pico can, because both stacks live in one binary.
 
 ## Short console commands
 
-`diag` · `tx` · `relay [on|off]` · `mode [lora|lorawan|repeat]` · `lwstat` ·
-`lwsend <text>` · `lwreset` · `rptstat` · `rpttx <hex>` · `src` · `boot`
+`diag` · `tx` · `relay [on|off]` · `mode [lora|lorawan|repeat|repeatid]` ·
+`lwstat` · `lwsend <text>` · `lwreset` · `rptstat` · `rptlog` · `rpttx <hex>` ·
+`src` · `boot`
 
-`rptstat` prints the repeater's two channels and its counters. `rpttx <hex>`
-injects bytes into the repeater queue as if they had been received — the
-transmit side is checkable without a second LoRaWAN transmitter in range.
+`rptstat` prints the repeater's two channels, its counters and its identity.
+`rptlog` shows the collected forwarding records that have not been reported
+yet. `rpttx <hex>` injects bytes into the repeater queue as if they had been
+received — the transmit side is checkable without a second LoRaWAN transmitter
+in range.
 
 `src` prints the node's own source — it ships inside the flash, generated by
 `embed_source.py` before every build, by now over **all** files in `src/`
@@ -188,6 +206,57 @@ would take a 12 there.
 The node cannot be talked to in the repeater: it answers neither `C>` commands
 (that is the raw channel) nor downlinks (that is LoRaWAN). Either the minute
 count brings it back, or somebody puts a hand on the USB cable.
+
+### Why the forwarded frame must not be touched
+
+The obvious wish is to stamp a repeater id into the frame. It cannot be done,
+and the reason is arithmetic:
+
+```
+MIC = AES-CMAC(NwkSKey, B0 | MHDR | MACPayload)[0:4]
+```
+
+The CMAC runs over the **whole** message, and the `B0` block carries its
+**length**. One byte appended anywhere breaks it — and the repeater has
+neither the `NwkSKey` nor the `AppSKey` of the foreign device to recompute
+anything. If it had them it would not be a repeater but a man in the middle.
+
+Worse than failing, it would fail *invisibly*: a network server answers a
+modified frame with `No device-session exists for dev_addr` — the very message
+a stale ABP session produces. The mistake would be indistinguishable from the
+failure that cost us the morning of 28 Aug 2026.
+
+### `MODE_REPEAT_ID`: the identification goes next to the frame
+
+What can be read **without any key** is the header: `DevAddr` in bytes 1–4
+(little endian), `FCnt` in 6–7, the message type in the top three bits of byte
+0. That is enough to say afterwards which frame took which path; the join
+happens in the database, over DevAddr + FCnt + time.
+
+Every forward is recorded (DevAddr, FCnt, RSSI, SNR, MType), and after
+`LWRPT_LOG_JEDE` forwards the node sends **its own LoRaWAN uplink** on FPort
+20 with its own ABP session. Four bytes of header, nine per record — 31 bytes
+at three records, far below the 115 an SF9 uplink may carry.
+
+The uplink is built **by hand** (RadioLib's AES-ECB and AES-CMAC, see
+`rptUplinkBauen()` in `main.cpp`) instead of through the LoRaWAN stack. The
+stack would open RX1/RX2 and hold the radio for seconds, insist on its own
+duty-cycle bookkeeping, and share a frame counter with the OTAA session. Built
+by hand the report costs exactly one transmission — the same as a forward, on
+the same frequency and spreading factor, **through the same queue**. And it is
+only ever asked for when that queue is empty: the payload path comes first.
+
+The identity lives in `src/lorawan_secret.h` (not in git,
+[`cs_repeater.py`](../../../dell/cs_repeater.py) creates it and prints the
+three lines). Left at zero the node repeats but stays silent about it.
+
+**`skip_fcnt_check` on that device is deliberate.** The report's uplink counter
+lives in RAM only. Keeping it in flash would mean a fourth field in `Zustand`,
+and a changed struct invalidates every saved sector (`storage.cpp` checks the
+length): the node would lose mode, DevNonces and LoRaWAN session in one go,
+and the next OTAA join would be rejected as a replay. The price is that this
+one device has no replay protection — for a diagnostic in a private network
+that is the cheaper side of the trade.
 
 ## The LoRaWAN side
 
@@ -361,6 +430,33 @@ therefore set explicitly — and `forceLDRO` again on the way back.
   Funkkette des SX1302. Fuer den Repeater aendert das nichts (er sendet auf
   einer anderen Frequenz als er hoert), fuer Sendeversuche ueber das Gateway
   heisst es: die Selbsttaubheit, mit der man rechnet, gibt es hier nicht.
+
+### Repeater with identity (28 Aug 2026)
+
+`mode repeatid`, then three uplinks from the dell over the gateway
+([`pseudo-lorawan.py`](../../../dell/pseudo-lorawan.py), DevAddr `01DE1100`).
+Three forwards, then the report:
+
+```
+RPT #3 RSSI -100 dBm SNR 4.5 dB 27 B: 40 00 11 de 01 00 04 00 01 1f 74 ...
+  -> forward in 2000 ms on 867.1 MHz
+  -> forward 27 B on 867.1 MHz
+  -> report FCnt 0, 3 records, 31 B payload
+  -> forward 44 B on 867.1 MHz
+```
+
+And in ChirpStack, as device `pico-0e22-repeater` on FPort 20:
+
+```json
+{"version": 1, "weitergegeben": 3, "anzahl": 3, "weitergaben": [
+  {"dev_addr": "01de1100", "f_cnt": 2, "rssi": -102, "snr": 2.75, "m_type": 2},
+  {"dev_addr": "01de1100", "f_cnt": 3, "rssi": -100, "snr": 4.75, "m_type": 2},
+  {"dev_addr": "01de1100", "f_cnt": 4, "rssi": -100, "snr": 4.5,  "m_type": 2}]}
+```
+
+Three DevAddr/FCnt pairs that match the three frames the dell sent, each with
+the level at which the repeater heard it — and the forwarded frames themselves
+went out byte for byte unchanged.
 
 ## Contents
 

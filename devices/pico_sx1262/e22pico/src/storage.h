@@ -26,10 +26,15 @@
 #define MODE_LORA     0    // raw Ebyte channel (loraparms.h)
 #define MODE_LORAWAN  1    // LoRaWAN class A (lorawanparms.h)
 #define MODE_REPEAT   2    // LoRaWAN repeater (lorawanparms.h, "Repeater")
+// The same repeater, and it says afterwards which frame it carried -- as its
+// own LoRaWAN uplink, next to the forwarded frame and never inside it. A
+// separate mode so that the return ticket (C>MODE ... [min]) is the way back
+// if the reports cost more than they are worth.
+#define MODE_REPEAT_ID 3   // repeater + report (lorawanparms.h, "identity")
 
 // Everything that has to survive a restart. Written as one block.
 struct Zustand {
-  uint8_t modus;        // MODE_LORA, MODE_LORAWAN or MODE_REPEAT
+  uint8_t modus;        // MODE_LORA/_LORAWAN/_REPEAT/_REPEAT_ID
   uint8_t hatNonces;    // 1 = nonces[] holds a valid state
   uint8_t hatSitzung;   // 1 = sitzung[] holds a valid session
   uint8_t reserve;
