@@ -1,4 +1,4 @@
-// Two operating modes on one SX1262 (Waveshare Pico-LoRa) -- RadioLib.
+// Three operating modes on one SX1262 (Waveshare Pico-LoRa) -- RadioLib.
 //
 //   MODE_LORA     raw Ebyte channel, as before: 868.125 MHz, SF11/BW500,
 //                  CR4/5, LDRO 1, sync word 0x55 (register 0x0740 = 54 54),
@@ -6,10 +6,16 @@
 //                  bytes, target address, XOR 0x12), PONG replies and relay.
 //   MODE_LORAWAN  LoRaWAN class A, EU868, OTAA against the ChirpStack on the
 //                  dell (192.168.5.23), fed by the DLOS8N at 10.9.0.9.
+//   MODE_REPEAT   LoRaWAN repeater: listens on 868.1 MHz SF9 BW125 sync 0x34
+//                  (one EU868 default channel) and retransmits every frame it
+//                  hears bit-for-bit -- the whole PHYPayload, MIC included --
+//                  on 867.1 MHz, two seconds later. No session, no stack:
+//                  raw LoRa with the LoRaWAN sync word. All parameters are in
+//                  lorawanparms.h, section "repeater".
 //
-// Only one of them runs at a time -- one radio chip, two worlds. The selected
-// mode lives in flash (storage.h) and survives a power cut, together with
-// the DevNonce and the LoRaWAN session.
+// Only one of them runs at a time -- one radio chip, three worlds. The
+// selected mode lives in flash (storage.h) and survives a power cut, together
+// with the DevNonce and the LoRaWAN session.
 //
 // Switching works over the air from both sides, because the Pico has no WLAN
 // and nobody is plugged into USB up on the mountain:
@@ -21,10 +27,16 @@
 //                            only then does the mode change.
 //   LoRaWAN -> raw channel   downlink on FPort 10, byte 0 = 0x00, optionally
 //                            two bytes of minutes until the return.
+//   -> repeater              "C>MODE REPEAT [minutes]" on the raw channel,
+//                            or AT+LORAWAN=2[,minutes] over USB/UART. In the
+//                            repeater the node answers nobody: it only
+//                            listens and forwards, so the minute count is
+//                            what brings it back.
 //
 // The optional minute count is the return ticket: if nobody answers in the
-// new mode, the node comes back on its own. It lives in RAM only -- a power
-// cut in between leaves the node in the last mode that was written to flash.
+// new mode, the node comes back into the mode it came from, on its own. It
+// lives in RAM only -- a power cut in between leaves the node in the last
+// mode that was written to flash.
 //
 // Reception on the raw channel closely follows the RadioLib example
 // SX126x_PingPong: the DIO1 interrupt sets a flag, loop() reads the packet
@@ -38,9 +50,11 @@
 // loop protection between several relays. Remote commands and their answers
 // (C>/A>) are never forwarded, same as in repeater.py.
 //
-// Console commands: diag | tx | relay [on|off] | mode [lora|lorawan] |
-//                   lwstat | lwsend <text> | lwreset | src | boot
+// Console commands: diag | tx | relay [on|off] | mode [lora|lorawan|repeat] |
+//                   lwstat | lwsend <text> | lwreset | rpttx <hex> | src | boot
 //   boot jumps into the ROM bootloader (RPI-RP2 drive for firmware.uf2).
+//   rpttx injects bytes into the repeater queue as if they had been received
+//   -- the TX path is checkable without a second LoRaWAN transmitter.
 //   src prints the node's own source -- it ships inside the flash, generated
 //   by embed_source.py before every build. That way the node carries
 //   its own blueprint; it can no longer live on a notebook alone.
@@ -137,8 +151,38 @@ struct AntwortSlot {
 static AntwortSlot antworten[8];
 static uint8_t antwortAnzahl = 0;
 
+// --- repeater queue ----------------------------------------------------------
+// One reception in MODE_REPEAT, LWRPT_DELAY_MS later the same bytes go out on
+// LWRPT_TX_FREQ_MHZ. The content is the untouched PHYPayload (up to 255 B);
+// the repeater neither parses nor alters it -- 1:1 is the point.
+struct WiederholungSlot {
+  unsigned long faellig;
+  uint8_t daten[256];
+  size_t len;
+};
+static WiederholungSlot wiederholungen[LWRPT_QUEUE];
+static uint8_t wiederholungAnzahl = 0;
+static unsigned long rptEmpfangen = 0, rptWeitergegeben = 0, rptVerworfen = 0;
+static bool rptSendet = false;                 // radio busy with a forward
+static int  rptSendeStatus = RADIOLIB_ERR_NONE;
+
+// Takes bytes into the repeater queue. The same path serves a real reception
+// and the console command "rpttx" -- that way the transmit side can be
+// checked without a second LoRaWAN transmitter in radio range.
+static bool wiederholungEinplanen(const uint8_t* daten, size_t len) {
+  if (len == 0 || len > sizeof(wiederholungen[0].daten)) return false;
+  if (wiederholungAnzahl >= LWRPT_QUEUE) { rptVerworfen++; return false; }
+  WiederholungSlot& w = wiederholungen[wiederholungAnzahl++];
+  w.faellig = millis() + LWRPT_DELAY_MS;
+  memcpy(w.daten, daten, len);
+  w.len = len;
+  return true;
+}
+
 // Reports a reception to the AT interface; defined further down.
 static void atEmpfangMelden(uint8_t port, const uint8_t* daten, size_t len);
+// Prints the repeater's channels and counters; defined further down.
+static void rptstat();
 
 // Called by the DIO1 interrupt when TX or RX has finished.
 static void setFlag(void) { operationDone = true; }
@@ -159,7 +203,9 @@ static void sag(const char* fmt, ...) {
 }
 
 static const char* modusName(uint8_t m) {
-  return m == MODE_LORAWAN ? "LoRaWAN" : "raw channel";
+  if (m == MODE_LORAWAN) return "LoRaWAN";
+  if (m == MODE_REPEAT) return "repeater";
+  return "raw channel";
 }
 
 // adresse[3] = NETID, ZH, ZL. Default is NETID 00 + broadcast FFFF.
@@ -286,6 +332,39 @@ static bool lorawanBetriebEinrichten() {
   return true;
 }
 
+// Bring up the repeater: continuous receive on one EU868 default channel with
+// the LoRaWAN sync word, forwards go out bit-for-bit on the second frequency.
+// autoLDRO as in LoRaWAN mode: at SF9/BW125 the automatic setting picks 0,
+// the way the gateway expects it.
+static bool repeaterBetriebEinrichten() {
+  radio.clearDio1Action();
+  int state = radio.begin(LWRPT_RX_FREQ_MHZ, LWRPT_BW_KHZ, LWRPT_SF, LWRPT_CR,
+                          LWRPT_SYNCWORD, LWRPT_POWER_DBM, LWRPT_PREAMBLE,
+                          TCXO_V);
+  if (state != RADIOLIB_ERR_NONE) {
+    sag("SX1262 begin failed: %d\n", state);
+    return false;
+  }
+  radio.setDio2AsRfSwitch(true);       // antenna switch, as everywhere
+  radio.autoLDRO();
+
+  wiederholungAnzahl = 0;
+  rptSendet = false;
+  transmitFlag = false;
+  operationDone = false;
+
+  radio.setDio1Action(setFlag);        // interrupt on DIO1
+  state = radio.startReceive();        // continuous receive
+  if (state != RADIOLIB_ERR_NONE) {
+    sag("startReceive failed: %d\n", state);
+    return false;
+  }
+  sag("repeater: %.1f MHz SF%d BW%.0f sync 0x%02X -> %.1f MHz, %lu ms delay\n",
+      LWRPT_RX_FREQ_MHZ, LWRPT_SF, LWRPT_BW_KHZ, LWRPT_SYNCWORD,
+      LWRPT_TX_FREQ_MHZ, (unsigned long)LWRPT_DELAY_MS);
+  return true;
+}
+
 static void modusSetzen(uint8_t neu, bool sichern) {
   // Save the session when leaving LoRaWAN mode. Without this the uplink
   // counter falls back to the last saved state (LW_SESSION_EVERY) when
@@ -299,8 +378,10 @@ static void modusSetzen(uint8_t neu, bool sichern) {
     sichern = true;
   }
   zustand.modus = neu;
-  bool ok = (neu == MODE_LORAWAN) ? lorawanBetriebEinrichten()
-                                   : rohBetriebEinrichten();
+  bool ok;
+  if (neu == MODE_LORAWAN)      ok = lorawanBetriebEinrichten();
+  else if (neu == MODE_REPEAT)  ok = repeaterBetriebEinrichten();
+  else                          ok = rohBetriebEinrichten();
   if (sichern) sicherungSchreiben("mode");
   sag("mode: %s%s\n", modusName(neu), ok ? "" : " (RADIO ERROR)");
 }
@@ -541,13 +622,17 @@ static void befehlAusfuehren(const char* befehl, char* out, size_t outsz) {
 
   if (strcmp(name, "MODE") == 0) {
     if (wert[0] == 0) {
-      snprintf(out, outsz, "MODE %s", zustand.modus == MODE_LORAWAN ? "LORAWAN" : "LORA");
+      const char* m = "LORA";
+      if (zustand.modus == MODE_LORAWAN) m = "LORAWAN";
+      else if (zustand.modus == MODE_REPEAT) m = "REPEAT";
+      snprintf(out, outsz, "MODE %s", m);
       return;
     }
     uint8_t neu;
     if (strcmp(wert, "LORAWAN") == 0) neu = MODE_LORAWAN;
     else if (strcmp(wert, "LORA") == 0) neu = MODE_LORA;
-    else { snprintf(out, outsz, "MODE: LORA or LORAWAN"); return; }
+    else if (strcmp(wert, "REPEAT") == 0) neu = MODE_REPEAT;
+    else { snprintf(out, outsz, "MODE: LORA, LORAWAN or REPEAT"); return; }
     unsigned long minuten = zusatz[0] ? strtoul(zusatz, NULL, 10) : 0;
     wechselVormerken(neu, minuten);
     if (minuten)
@@ -558,10 +643,12 @@ static void befehlAusfuehren(const char* befehl, char* out, size_t outsz) {
   }
 
   if (strcmp(name, "STATUS") == 0) {
-    snprintf(out, outsz, "id%s %s rx%lu tx%lu %lus relay%d lw%lu",
-             stationId, zustand.modus == MODE_LORAWAN ? "LORAWAN" : "LORA",
-             empfangen, beantwortet, millis() / 1000UL, relaisAn ? 1 : 0,
-             lwUplinks);
+    const char* m = "LORA";
+    if (zustand.modus == MODE_LORAWAN) m = "LORAWAN";
+    else if (zustand.modus == MODE_REPEAT) m = "REPEAT";
+    snprintf(out, outsz, "id%s %s rx%lu tx%lu %lus relay%d lw%lu rpt%lu/%lu",
+             stationId, m, empfangen, beantwortet, millis() / 1000UL,
+             relaisAn ? 1 : 0, lwUplinks, rptWeitergegeben, rptEmpfangen);
     return;
   }
 
@@ -644,7 +731,9 @@ static void atCfg(Stream &s) {
   atAntwort(s, "AT+ADR=%d", LW_ADR ? 1 : 0);
   atAntwort(s, "AT+DR=%d", LW_DATARATE);
   atAntwort(s, "AT+FCU=%lu", (unsigned long)(lwBereit ? node.getFCntUp() : 0));
-  atAntwort(s, "AT+LORAWAN=%d", zustand.modus == MODE_LORAWAN ? 1 : 0);
+  // The mode constants are the AT values themselves: 0 = LORA, 1 = LORAWAN,
+  // 2 = REPEAT (storage.h).
+  atAntwort(s, "AT+LORAWAN=%d", zustand.modus);
   atAntwort(s, "AT+FRE=%.3f", FREQ_MHZ);
   atAntwort(s, "AT+SF=%d", LORA_SF);
   atAntwort(s, "AT+BW=%.0f", BW_KHZ);
@@ -665,7 +754,7 @@ static void atHilfe(Stream &s) {
   atAntwort(s, "AT?                     this list");
   atAntwort(s, "ATZ                     restart");
   atAntwort(s, "AT+CFG                  show everything");
-  atAntwort(s, "AT+LORAWAN=0|1[,min]    0 = raw channel, 1 = LoRaWAN");
+  atAntwort(s, "AT+LORAWAN=0|1|2[,min]  0 = raw channel, 1 = LoRaWAN, 2 = repeater");
   atAntwort(s, "AT+JOIN                 trigger an OTAA join");
   atAntwort(s, "AT+NJS=?                1 = session active");
   atAntwort(s, "AT+SEND=<cfm>,<port>,<len>,<text>");
@@ -768,14 +857,15 @@ static bool atBefehl(Stream &s, char* zeile) {
   // --- operating mode ---
   if (strcmp(name, "LORAWAN") == 0) {
     if (!wert || frage) {
-      atAntwort(s, "%d", zustand.modus == MODE_LORAWAN ? 1 : 0);
+      atAntwort(s, "%d", zustand.modus);
       return true;
     }
     char* komma = strchr(wert, ',');
     unsigned long minuten = 0;
     if (komma) { *komma = 0; minuten = strtoul(komma + 1, NULL, 10); }
-    if (wert[0] != '0' && wert[0] != '1') { atAntwort(s, "AT_PARAM_ERROR"); return false; }
-    wechselVormerken(wert[0] == '1' ? MODE_LORAWAN : MODE_LORA, minuten);
+    if (wert[0] < '0' || wert[0] > '2') { atAntwort(s, "AT_PARAM_ERROR"); return false; }
+    // 0/1/2 happen to be the mode constants themselves (storage.h).
+    wechselVormerken((uint8_t)(wert[0] - '0'), minuten);
     return true;
   }
 
@@ -925,6 +1015,10 @@ void setup() {
 
   if (zustand.modus == MODE_LORAWAN) {
     if (!lorawanBetriebEinrichten()) while (true) delay(1000);
+  } else if (zustand.modus == MODE_REPEAT) {
+    // No parameter broadcast here: on the LoRaWAN channels only LoRaWAN
+    // frames belong, an Ebyte frame would just be noise for the gateway.
+    if (!repeaterBetriebEinrichten()) while (true) delay(1000);
   } else {
     if (!rohBetriebEinrichten()) while (true) delay(1000);
 
@@ -951,10 +1045,12 @@ void setup() {
 
   sag("station %s, mode %s, relay %s\n", stationId,
       modusName(zustand.modus), relaisAn ? "on" : "off");
-  sag("commands: diag | tx | relay [on|off] | mode [lora|lorawan] |\n");
-  sag("          lwstat | lwsend <text> | lwreset | src | boot\n");
-  sag("AT set as on the LA66: AT | AT? | AT+CFG | AT+SENDB=... | AT+LORAWAN=0|1\n");
-  sag("over the air: C>MODE LORAWAN [min] | C>STATUS | C>RELAY 0|1\n");
+  sag("commands: diag | tx | relay [on|off] | mode [lora|lorawan|repeat] |\n");
+  sag("          lwstat | lwsend <text> | lwreset | rptstat | rpttx <hex> |\n");
+  sag("          src | boot\n");
+  sag("AT set as on the LA66: AT | AT? | AT+CFG | AT+SENDB=... | AT+LORAWAN=0|1|2\n");
+  sag("over the air: C>MODE LORA|LORAWAN|REPEAT [min] | C>STATUS | C>RELAY 0|1\n");
+  if (zustand.modus == MODE_REPEAT) rptstat();
   diag();
 }
 
@@ -992,6 +1088,18 @@ static void lwstat() {
         (long)(rueckkehrFaellig - millis()) / 1000L);
 }
 
+static void rptstat() {
+  sag("repeater: %.1f MHz SF%d BW%.0f sync 0x%02X -> %.1f MHz, %lu ms delay\n",
+      LWRPT_RX_FREQ_MHZ, LWRPT_SF, LWRPT_BW_KHZ, LWRPT_SYNCWORD,
+      LWRPT_TX_FREQ_MHZ, (unsigned long)LWRPT_DELAY_MS);
+  sag("  received %lu, forwarded %lu, dropped %lu, %u queued%s\n",
+      rptEmpfangen, rptWeitergegeben, rptVerworfen, wiederholungAnzahl,
+      rptSendet ? ", transmitting" : "");
+  if (zustand.modus != MODE_REPEAT)
+    sag("  (mode is %s -- counters are from the last repeater run)\n",
+        modusName(zustand.modus));
+}
+
 // --- console commands ------------------------------------------------------
 
 static void usbKommando(String cmd) {
@@ -1021,6 +1129,28 @@ static void usbKommando(String cmd) {
   } else if (cmd == "mode lorawan") {
     rueckkehrModus = 0xFF;
     modusSetzen(MODE_LORAWAN, true);
+  } else if (cmd == "mode repeat") {
+    rueckkehrModus = 0xFF;
+    modusSetzen(MODE_REPEAT, true);
+  } else if (cmd == "rptstat") {
+    rptstat();
+  } else if (cmd.startsWith("rpttx ")) {
+    // Inject bytes as if they had been received: they take the same queue and
+    // go out on the transmit frequency after LWRPT_DELAY_MS.
+    String hex = cmd.substring(6);
+    hex.trim();
+    uint8_t daten[256];
+    size_t len = 0;
+    if (zustand.modus != MODE_REPEAT) {
+      sag("rpttx: only in repeater mode (mode repeat)\n");
+    } else if (!hexBytes(hex.c_str(), daten, sizeof(daten), &len) || len == 0) {
+      sag("rpttx: expects an even number of hex digits, at most 512\n");
+    } else if (wiederholungEinplanen(daten, len)) {
+      sag("rpttx: %u B queued, out in %lu ms on %.1f MHz\n",
+          (unsigned)len, (unsigned long)LWRPT_DELAY_MS, LWRPT_TX_FREQ_MHZ);
+    } else {
+      sag("rpttx: queue full\n");
+    }
   } else if (cmd == "lwstat") {
     lwstat();
   } else if (cmd == "lwreset") {
@@ -1190,6 +1320,83 @@ static void rohSchleife() {
   radio.startReceive();
 }
 
+// --- repeater --------------------------------------------------------------
+// Listen on LWRPT_RX_FREQ_MHZ, and LWRPT_DELAY_MS later put the same bytes
+// out again on LWRPT_TX_FREQ_MHZ. Nothing is parsed, nothing is altered: the
+// MIC of the original device has to stay valid, otherwise the network server
+// would drop the copy. Both frequencies are far enough apart that the node
+// cannot hear its own forward -- that is the whole loop protection.
+
+static void repeaterSchleife() {
+  // A due forward goes out as soon as the radio is free: standby, frequency
+  // over to the transmit channel, send. The way back to listening happens
+  // when the interrupt reports the end of the transmission.
+  if (!rptSendet && wiederholungAnzahl > 0 &&
+      (long)(millis() - wiederholungen[0].faellig) >= 0) {
+    WiederholungSlot w = wiederholungen[0];
+    for (uint8_t i = 1; i < wiederholungAnzahl; i++)
+      wiederholungen[i - 1] = wiederholungen[i];
+    wiederholungAnzahl--;
+
+    radio.standby();
+    operationDone = false;      // whatever was pending is gone with the standby
+    int f = radio.setFrequency(LWRPT_TX_FREQ_MHZ);
+    if (f != RADIOLIB_ERR_NONE) sag("repeater: TX frequency failed: %d\n", f);
+    rptSendeStatus = radio.startTransmit(w.daten, w.len);
+    if (rptSendeStatus == RADIOLIB_ERR_NONE) {
+      rptSendet = true;
+      sag("  -> forward %u B on %.1f MHz\n", (unsigned)w.len, LWRPT_TX_FREQ_MHZ);
+    } else {
+      sag("  -> forward TX ERROR %d\n", rptSendeStatus);
+      radio.setFrequency(LWRPT_RX_FREQ_MHZ);
+      radio.startReceive();
+    }
+  }
+
+  if (!operationDone) return;
+  operationDone = false;
+
+  if (rptSendet) {
+    // The forward is out -- back to the listening channel.
+    rptSendet = false;
+    if (rptSendeStatus == RADIOLIB_ERR_NONE) rptWeitergegeben++;
+    else sag("  -> forward TX ERROR %d\n", rptSendeStatus);
+    int f = radio.setFrequency(LWRPT_RX_FREQ_MHZ);
+    if (f != RADIOLIB_ERR_NONE) sag("repeater: RX frequency failed: %d\n", f);
+    radio.startReceive();
+    return;
+  }
+
+  // A frame came in on the listening channel.
+  size_t len = radio.getPacketLength();
+  uint8_t buf[256];
+  if (len > sizeof(buf)) len = sizeof(buf);
+  int state = radio.readData(buf, len);
+  letzteRssi = radio.getRSSI();
+  letzteSnr = radio.getSNR();
+
+  if (state == RADIOLIB_ERR_NONE) {
+    rptEmpfangen++;
+    sag("RPT #%lu RSSI %.0f dBm SNR %.1f dB %u B:",
+        rptEmpfangen, letzteRssi, letzteSnr, (unsigned)len);
+    for (size_t i = 0; i < len; i++) sag(" %02x", buf[i]);
+    sag("\n");
+    // Report it on the AT interface too -- a host on the two wires sees what
+    // goes through the repeater without having to listen itself.
+    atEmpfangMelden(0, buf, len);
+    if (wiederholungEinplanen(buf, len))
+      sag("  -> forward in %lu ms on %.1f MHz\n",
+          (unsigned long)LWRPT_DELAY_MS, LWRPT_TX_FREQ_MHZ);
+    else
+      sag("  -> forward dropped (queue full, %lu in total)\n", rptVerworfen);
+  } else {
+    // CRC errors are normal on a busy channel: whatever is not readable
+    // cannot be repeated either, and a broken copy would only cost airtime.
+    sag("RPT: reception error %d\n", state);
+  }
+  radio.startReceive();
+}
+
 void loop() {
   static unsigned long letzterPuls = 0;
 
@@ -1208,6 +1415,9 @@ void loop() {
     if (zustand.modus == MODE_LORAWAN)
       sag("alive: LoRaWAN %s, %lu uplinks, %lu downlinks\n",
           lwBereit ? "up" : "waiting for join", lwUplinks, lwDownlinks);
+    else if (zustand.modus == MODE_REPEAT)
+      sag("alive: repeater %lu received, %lu forwarded, %lu dropped, %u queued\n",
+          rptEmpfangen, rptWeitergegeben, rptVerworfen, wiederholungAnzahl);
     else
       sag("alive: %lu received, %lu answered, %u queued, relay %s\n",
           empfangen, beantwortet, antwortAnzahl, relaisAn ? "on" : "off");
@@ -1215,21 +1425,27 @@ void loop() {
 
   if (zustand.modus == MODE_LORAWAN) {
     lorawanSchleife();
+  } else if (zustand.modus == MODE_REPEAT) {
+    repeaterSchleife();
   } else {
     rohSchleife();
   }
 
   // A mode change requested over the air runs only once the answer to it has
   // been sent -- otherwise bringing the radio back up would tear it away.
-  if (wechselNach != 0xFF && antwortAnzahl == 0 && !transmitFlag) {
+  if (wechselNach != 0xFF && antwortAnzahl == 0 && !transmitFlag && !rptSendet) {
     uint8_t neu = wechselNach;
     unsigned long minuten = wechselMinuten;
     wechselNach = 0xFF;
     wechselMinuten = 0;
     if (neu != zustand.modus) {
+      // The return ticket leads back to where the node came from -- with
+      // three modes "the other one" is no longer defined, and only the mode
+      // that was reachable a moment ago is proven to be reachable.
+      uint8_t vorher = zustand.modus;
       modusSetzen(neu, true);
       if (minuten) {
-        rueckkehrModus = (neu == MODE_LORAWAN) ? MODE_LORA : MODE_LORAWAN;
+        rueckkehrModus = vorher;
         rueckkehrFaellig = millis() + minuten * 60000UL;
         sag("return to %s in %lu min noted (RAM only)\n",
             modusName(rueckkehrModus), minuten);

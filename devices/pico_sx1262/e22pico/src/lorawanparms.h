@@ -100,4 +100,38 @@
 // uplinks.
 #define LW_SESSION_EVERY  8
 
+// --- repeater (MODE_REPEAT) -------------------------------------------------
+// The third operating mode: the node listens on one EU868 default channel for
+// LoRaWAN uplinks and retransmits every frame it hears bit-for-bit (the whole
+// PHYPayload, 1:1) on a second LoRaWAN frequency, LWRPT_DELAY_MS later.
+//
+// No session, no identity, no duty-cycle bookkeeping of the LoRaWAN stack is
+// involved -- this is raw LoRa with the LoRaWAN sync word. The MIC of the
+// original frame stays valid, so the network server accepts the copy as a
+// normal uplink of that device; a double reception (original + repeat) is
+// merged by the gateway's deduplication. That is what a repeater is for:
+// range, not a second identity. A second LoRaWAN identity instead would need
+// its own DevNonce/session in flash (Zustand layout change) and would be
+// locked by the 1 % duty cycle after every forward -- deliberately not done.
+//
+// Receive and transmit frequency are far enough apart that the node cannot
+// hear its own forward (one radio chip, one antenna) -- that is the whole
+// loop protection, the same argument RELAIS.md makes for the Brauneck relay.
+// Listening works on exactly one spreading factor at a time: LWRPT_SF is the
+// operating rate of the devices to be repeated (DR3 here). OTAA join requests
+// (DR0 = SF12) are not heard; for that the value would have to be 12.
+// TX on 867.1: the DLOS8N hears that channel (radio_0), so a forward can be
+// checked in the gateway DB. The band 869.4-869.65 would allow 10 % duty
+// cycle and 500 mW, but the DLOS8N does not listen there.
+#define LWRPT_RX_FREQ_MHZ  868.1f    // EU868 default channel g0
+#define LWRPT_TX_FREQ_MHZ  867.1f    // EU868 channel c4
+#define LWRPT_SF           9         // DR3 = SF9/BW125
+#define LWRPT_BW_KHZ       125.0f
+#define LWRPT_CR           5         // RadioLib encoding: 5 = 4/5
+#define LWRPT_SYNCWORD     0x34      // LoRaWAN, as the stack sets it too
+#define LWRPT_PREAMBLE     8
+#define LWRPT_POWER_DBM    14        // 25 mW ERP, the limit of 867.0-868.6
+#define LWRPT_DELAY_MS     2000      // the fixed pause before the forward
+#define LWRPT_QUEUE        4         // forwards waiting at most
+
 #endif // LORAWANPARMS_H

@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 devices/pico_sx1262/e22pico/src/source_embed.h
 devices/pico_sx1262/e22pico/src/lorawan_secret.h
+devices/pico_sx1262/e22pico/.pio/
