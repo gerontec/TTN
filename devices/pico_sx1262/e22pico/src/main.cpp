@@ -1507,11 +1507,18 @@ static void rptBerichtEinreihen() {
   if (n > 8) n = 8;                       // one uplink, no fragmenting
   if (n == 0) { rptSeitBericht = 0; return; }
 
+  // rptWeitergegeben counts every completed transmission, and a report is one
+  // of them -- measured on 28 Aug 2026, the second report claimed 7 forwards
+  // where there had been 6. The reports sent so far are therefore subtracted.
+  // At this point the previous report has certainly gone out (the caller only
+  // asks with an empty queue), so the two counters are consistent.
+  unsigned long getragen = rptWeitergegeben - rptBerichte;
+
   uint8_t nutz[4 + 8 * 9];
   size_t p = 0;
   nutz[p++] = 1;                                        // payload version
-  nutz[p++] = (uint8_t)(rptWeitergegeben & 0xFF);       // forwards, low byte
-  nutz[p++] = (uint8_t)((rptWeitergegeben >> 8) & 0xFF);
+  nutz[p++] = (uint8_t)(getragen & 0xFF);               // forwards, low byte
+  nutz[p++] = (uint8_t)((getragen >> 8) & 0xFF);
   nutz[p++] = n;
   // The youngest n records -- if a burst overflowed the buffer, the newest
   // ones are the interesting ones.
