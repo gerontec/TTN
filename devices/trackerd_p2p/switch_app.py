@@ -25,9 +25,11 @@ gegen die echte otadata des Geraets verifiziert.
     ./switch_app.py app0             # zurueck auf app0 (alias: lorawan)
     ./switch_app.py app1             # wieder app1 (alias: p2p), ohne neu zu flashen
 
-Stand 31.08.2026: app0 traegt einen aelteren Fork-Bau (meldet `v1.4.6`), app1
-den aktuellen (`v1.4.8`, Konfigrahmen auf fPort 9, Weckschwelle 0x0A) und ist
-die Bootpartition.
+Stand 31.08.2026, per fPort-5-Statusrahmen ueber die Luft geprueft: **app0**
+traegt Draginos Werksfirmware (meldet `v1.4.8`, Arduino-Core von Oktober 2021)
+und ist die Bootpartition; **app1** den letzten Eigenbau (meldet `v1.4.6`,
+Core von Oktober 2023). Frueher stand hier die umgekehrte Zuordnung -- sie war
+falsch.
 
 **`--bin` ist Pflicht.** Eine Vorgabe gab es einmal, und sie zeigte auf einen
 Bau aus Draginos 1.5.3-Quelltext -- der auf diese Hardware nicht gehoert, weil
@@ -35,7 +37,7 @@ Bau aus Draginos 1.5.3-Quelltext -- der auf diese Hardware nicht gehoert, weil
 Alarmknopf damit auf GPIO 25 statt GPIO 0 liegt. Ein blankes `flash` haette
 ihn wortlos zurueckgeschrieben. Das Image gehoert genannt, nicht geraten:
 
-    ../trackerd_fork148/  LoRaWAN-Fork, gebaut auf 192.168.5.23
+    ../trackerd_stock148/ LoRaWAN-Fork auf dem Werksstand, gebaut auf 192.168.5.23
     ../trackerd_p2p/p2p/  P2P-Firmware
 
 Die Aktionen meinen nur die Slots, nicht deren Inhalt: 'app1'/'p2p' = app1

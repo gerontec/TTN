@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Einen Downlink an ein TTN-Geraet stellen, als Hex auf der Kommandozeile.
 
-Die Befehlstabelle des TrackerD steht in devices/trackerd_fork148/ATcmdTrackerD.md;
+Die Befehlstabelle des TrackerD steht in devices/trackerd_stock148/ATcmdTrackerD.md;
 sie gilt auf jedem Port ausser 0. Haeufig gebraucht:
 
     ./ttn_down.py 2301        # Geraetestatus anfordern (Rahmen auf fPort 5)
