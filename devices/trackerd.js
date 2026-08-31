@@ -213,6 +213,25 @@ function decodeUplink(input) {
         };
       }
       break;
+    case 9:
+      {
+        // fPort 9: der Konfigrahmen. Das Geraet schickt seine Einstellungen
+        // schon als JSON-Text - hier wird nur der Rumpf zusammengesetzt und
+        // geparst, nichts umgerechnet. Enthaelt "app": den laufenden OTA-Slot,
+        // der ueber die Firmware-Version nicht zu erkennen ist (beide Slots
+        // tragen denselben Versionsstring, sonst loeste jeder Wechsel einen
+        // DATA_CLEAR aus).
+        var txt = '';
+        for (i = 0; i < bytes.length; i++) txt += String.fromCharCode(bytes[i]);
+        try {
+          return { data: JSON.parse(txt) };
+        } catch (e) {
+          // Ein abgeschnittener Rahmen soll die Zeile nicht kosten: der Text
+          // kommt roh durch, damit in der Datenbank wenigstens etwas steht.
+          return { data: { raw: txt }, warnings: ['fPort 9: kein gueltiges JSON'] };
+        }
+      }
+      break;
     case 5:
       {
         var decode = {};
@@ -242,7 +261,10 @@ function decodeUplink(input) {
         semsor_mod = (bytes[7] >> 6) & 0x3f;
         gps_mod = (bytes[7] >> 4) & 0x03;
         ble_mod = bytes[7] & 0x0f;
-        panackmd = bytes[8] & 0x04;
+        // Werks-Decoder wies `panackmd` zu und gab `pnackmd` aus, weshalb
+        // PNACKMD immer undefiniert blieb. Bit 2 von Byte 8, als 0/1 wie
+        // die anderen Schalter.
+        pnackmd = bytes[8] & 0x04 ? 1 : 0;
         lon = (bytes[8] >> 1) & 0x01 ? 'ON' : 'OFF';
         intwk = bytes[8] & 0x01;
 
