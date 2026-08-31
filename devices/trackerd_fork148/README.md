@@ -100,8 +100,12 @@ der aktuellen Sitzungsadresse neu gesetzt, und die kommt bei OTAA vom Netz.
 
 | Slot | Inhalt | meldet |
 |---|---|---|
-| app0 | aelterer Fork-Bau | `TrackerD ,v1.4.6` |
-| app1 | dieser Bau — Konfigrahmen fPort 9, Weckschwelle 0x0A, AES-Korrektur; **Bootpartition** | `TrackerD ,v1.4.8` |
+| app0 | dieser Bau, **Bootpartition** | `TrackerD ,v1.4.8` |
+| app1 | dasselbe Image als Rueckweg | `TrackerD ,v1.4.8` |
+
+Beide Slots tragen dasselbe Bauwerk, also auch denselben Versionsstring — ein
+Wechsel kostet damit keinen `DATA_CLEAR`. Welcher Slot laeuft, sagt das Feld
+`app` im Konfigrahmen (fPort 9).
 
 Nichts aus 1.5.x liegt mehr auf dem Geraet. Geprueft wurde nicht am
 Versionsstring, sondern am Flash: `esptool read-flash 0x1F0000 0x1E0000` und

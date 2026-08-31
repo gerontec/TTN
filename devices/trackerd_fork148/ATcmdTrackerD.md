@@ -176,7 +176,7 @@ Geprueft in `LORA_RxData()`. Hex, auf jedem Port ausser 0:
 | `05 00` / `05 01` | `AT+CFM` |
 | `20 00` / `20 01` | `AT+NJM` |
 | `22 01` | `AT+ADR=1` |
-| `23 01` | sofortige Positionsmeldung |
+| `23 01` | **Geraetestatus anfordern** — loest den Rahmen auf fPort 5 aus (`gps_start = 1` → `device_send()`), nicht etwa eine Positionsmeldung |
 | `24 xx` | `AT+CHE` |
 | `25 xx` | `AT+DWELLT` |
 | `34 xx` | `AT+PNACKMD` |

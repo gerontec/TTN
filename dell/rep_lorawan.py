@@ -34,9 +34,13 @@ DB = dict(user="gh", password="a12345", database="wagodb",
 SPALTEN = ("id, ts, source, event, dev_name, dev_eui, application, f_port, "
            "f_cnt, dr, frequency, rssi, snr, gateway_id, payload_hex, decoded")
 
-# fPort 5 ist der Statusrahmen des TrackerD. Er kommt unaufgefordert rund 9 s
-# nach jedem Join — einen Downlink, der ihn anfordert, kennt die Firmware
-# nicht. Wer einen frischen Stand braucht, muss das Geraet neu joinen lassen.
+# fPort 5 ist der Statusrahmen des TrackerD. Er kommt rund 9 s nach jedem Join
+# und sonst nur auf Anforderung: Downlink `23 01` auf einem beliebigen Port
+# ausser 0. Das Handbuch verspricht ihn zusaetzlich alle 12 Stunden — diese
+# Firmware kann das nicht: `device_send()` haengt allein an `sys.gps_start == 1`,
+# und das wird nur im Kaltstartzweig und im Downlink-Handler 0x23 gesetzt. In
+# 16 Tagen kam kein einziger der 98 Statusrahmen ohne vorangehenden Join,
+# darunter eine Laufzeit von 168 Stunden am Stueck.
 STATUS_PORT = 5
 
 BAENDER = {1: "EU868", 2: "US915", 3: "IN865", 4: "AU915", 5: "KZ865",
@@ -222,8 +226,8 @@ def drucke_status(zeilen):
     print()
     print("Stand %s: Bewegungsmodus (AT+INTWK, Draginos \"Sports mode\") ist %s."
           % (letzte[0], letzte[7].upper()))
-    print("Frischer Stand nur nach einem Join — die Firmware kennt keinen")
-    print("Downlink, der den Statusrahmen anfordert.")
+    print("Frischer Stand: Downlink `23 01` anfordern (jeder Port ausser 0),")
+    print("sonst kommt der Rahmen erst beim naechsten Join.")
 
 
 def main():
