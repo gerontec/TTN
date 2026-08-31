@@ -11,7 +11,7 @@ Grundlage ist Tag `v1.4.8` (`repo148`), das Vorgehen steht in
 | `extiButton.cpp.patch` | `src/` | Knopfbehandlung |
 | `fix_version.py` | `src/common.h` | `Pro_version` auf die geklonte Basis `v1.4.8` statt des stehen gebliebenen `v1.4.6` |
 | `fix_config_uplink.py` | `src/TrackerD.ino` | Konfigrahmen als JSON auf fPort 9, alle 20 min, mit laufendem OTA-Slot |
-| `fix_motion_sens.py` | `src/TrackerD.ino` | Weckschwelle 320 mg → 160 mg, Hochachse dazu |
+| `fix_motion_sens.py` | `src/TrackerD.ino` | Weckschwelle 320 mg → 160 mg (nur die Schwelle, Achsenmaske bleibt Draginos X+Y) |
 | `fix_gps_after_motion.py` | `src/TrackerD.ino` | **Dragino-Fehler**: im Bewegungstakt uebersprang der Weckruf die GPS-Suche |
 | `fix_mtdc_default.py` | `src/TrackerD.ino` | Bewegungstakt ab Werk 180 s → 120 s |
 | `fix_aes_len.py` | `lib/arduino-lmic` | **Bibliotheksfehler**: `os_aes()` prueft die Restlaenge in 8 statt 16 Bit |
