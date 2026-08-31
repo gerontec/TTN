@@ -25,14 +25,18 @@ gegen die echte otadata des Geraets verifiziert.
     ./switch_app.py app0             # zurueck auf app0 (alias: lorawan)
     ./switch_app.py app1             # wieder app1 (alias: p2p), ohne neu zu flashen
 
-Stand 26.08.2026: in app1 liegt der Bewegungs-Stand aus ../lorawan/ (v1.5.3,
-INTWK=1, MTDC=180000, Spur nur bei Bewegung), und app1 ist die Bootpartition.
-Ein blankes
+Stand 31.08.2026: app0 traegt einen aelteren Fork-Bau (meldet `v1.4.6`), app1
+den aktuellen (`v1.4.8`, Konfigrahmen auf fPort 9, Weckschwelle 0x0A) und ist
+die Bootpartition.
 
-    ./switch_app.py flash
+**`--bin` ist Pflicht.** Eine Vorgabe gab es einmal, und sie zeigte auf einen
+Bau aus Draginos 1.5.3-Quelltext -- der auf diese Hardware nicht gehoert, weil
+`button_loop()` dort die Variante an der Groesse der DevAddr waehlt und der
+Alarmknopf damit auf GPIO 25 statt GPIO 0 liegt. Ein blankes `flash` haette
+ihn wortlos zurueckgeschrieben. Das Image gehoert genannt, nicht geraten:
 
-nimmt deshalb dieses Image. Die P2P-Firmware liegt weiter unter ../p2p/ und
-kaeme mit --bin dorthin zurueck.
+    ../trackerd_fork148/  LoRaWAN-Fork, gebaut auf 192.168.5.23
+    ../trackerd_p2p/p2p/  P2P-Firmware
 
 Die Aktionen meinen nur die Slots, nicht deren Inhalt: 'app1'/'p2p' = app1
 (was gerade dort liegt), 'app0'/'lorawan' = app0 (Werksfirmware v1.4.8).
@@ -56,25 +60,6 @@ APP1_SIZE = 0x1E0000
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-
-def _erstes_vorhandenes(*pfade):
-    """Erster Pfad, der existiert - sonst der erste als Fehlermeldung."""
-    for pfad in pfade:
-        if os.path.exists(pfad):
-            return pfad
-    return pfade[0]
-
-
-# Seit 26.08.2026 liegt in app1 der Bewegungs-Stand, nicht mehr P2P. Die
-# Vorgabe zeigt deshalb dorthin: ein blankes "flash" darf den laufenden Stand
-# nicht versehentlich durch die alte P2P-Firmware ersetzen. Zwei Ablagen sind
-# im Umlauf - im Repo liegt der Bau unter ../trackerd_lorawan/, auf dem
-# Notebook unter lorawan/ neben diesem Skript.
-DEFAULT_BIN = _erstes_vorhandenes(
-    os.path.join(HERE, 'lorawan', '.pio', 'build', 'trackerd_lorawan',
-                 'firmware.bin'),
-    os.path.join(HERE, os.pardir, 'trackerd_lorawan', '.pio', 'build',
-                 'trackerd_lorawan', 'firmware.bin'))
 
 EMPTY = b'\xff' * SECTOR
 
@@ -166,13 +151,16 @@ def main():
                                        'app0', 'lorawan'])
     ap.add_argument('-p', '--port', default=PORT_DEFAULT)
     ap.add_argument('-b', '--baud', type=int, default=BAUD_DEFAULT)
-    ap.add_argument('--bin', default=DEFAULT_BIN,
-                    help='Image fuer "flash" (Vorgabe: Bewegungs-Stand aus lorawan/)')
+    # Keine Vorgabe: ein falsches Vorgabe-Image schreibt sich lautlos ins
+    # Geraet. Wer flasht, nennt das Image.
+    ap.add_argument('--bin', help='Image fuer "flash" (Pflicht)')
     args = ap.parse_args()
 
     if args.action == 'status':
         show_status(args.port, args.baud)
     elif args.action == 'flash':
+        if not args.bin:
+            sys.exit('flash braucht --bin <firmware.bin> - siehe --help')
         flash_app1(args.port, args.baud, args.bin)
         write_otadata(args.port, args.baud, 1)
         print('app1 geflasht und als Bootpartition gesetzt.')

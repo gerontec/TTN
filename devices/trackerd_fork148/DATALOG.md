@@ -32,10 +32,10 @@ Einstellung ueberlebt also Neustart und Stromausfall.
 **Achtung, ein Wechsel der Firmware-Version loescht die Einstellung.** Die
 Firmware vergleicht beim Kaltstart `fire_version` mit dem im EEPROM
 abgelegten Wert; sind sie verschieden, ruft sie `DATA_CLEAR()` und startet
-neu — `PNACKMD` steht dann wieder auf 0. Wer zwischen app0 (v1.4.8) und dem
-Bauwerk in diesem Verzeichnis (v1.5.3) hin und her bootet, muss danach also
-erneut einschalten. Erkennbar ist es an der Farbfolge Blau-Rot-Gruen beim
-Start, siehe [LEDS.md](LEDS.md).
+neu — `PNACKMD` steht dann wieder auf 0. app0 meldet 1.4.6, app1 meldet 1.4.8;
+jeder Wechsel zwischen den Slots kostet also einmal die Einstellungen.
+Erkennbar ist es an der Farbfolge Blau-Rot-Gruen beim Start, siehe
+[LEDS.md](LEDS.md).
 
 **Achtung, jede serielle Sitzung kostet einen Join.** Das Oeffnen des Ports
 zieht ueber DTR/RTS einen Power-on-Reset; damit ist der RTC-Speicher weg,

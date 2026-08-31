@@ -4,16 +4,29 @@ Vollstaendige Liste der seriellen Befehle des Dragino TrackerD, geprueft gegen
 den Quelltext (`src/at.h`, `src/at.cpp`) und gegen das Geraet in Lenggries
 (DevEUI `a840414f1188076c`).
 
-Zwei Staende sind im Umlauf, und sie unterscheiden sich im Befehlssatz:
+Stand 31.08.2026, beide Slots am Geraet gelesen:
 
-| Slot | Firmware | Befehle |
-|---|---|---|
-| app0 | Dragino v1.4.8, Werk | 41 |
-| app1 | v1.5.3, Bewegungs-Stand (seit 26.08.2026 aktiv) | 44 |
+| Slot | Firmware | meldet | Befehle |
+|---|---|---|---|
+| app0 | aelterer Fork-Bau | `TrackerD ,v1.4.6` | 41 |
+| app1 | Fork mit Konfigrahmen und empfindlicherem Sensor, Bootpartition | `TrackerD ,v1.4.8` | 41 |
 
-Die drei zusaetzlichen sind `AT+DEVICE`, `AT+PDTA` und `AT+BTDC`. Wer auf v1.4.8
-zurueckschaltet (`switch_app.py lorawan`), bekommt dort `ERROR` — das ist kein
-Tippfehler, sondern die fehlende Tabellenzeile.
+Beide stehen auf **derselben Basis**: Draginos Tag `v1.4.8`. Dass der aeltere
+Bau sich als 1.4.6 meldet, ist Draginos Unordnung — die Tags v1.4.6, v1.4.7,
+v1.4.8 und V1.4.9 zeigen alle auf denselben Commit (`a66935b`), und dessen
+`Pro_version` ist bei `v1.4.6` stehen geblieben. Der neue Bau setzt den String
+auf die Nummer, mit der die Basis geholt wird.
+
+**Der Preis:** `fire_version` ist damit 148 statt 146, und weil die Firmware
+diesen Wert beim Kaltstart mit dem EEPROM vergleicht, kostet jeder Wechsel
+zwischen den Slots einen `DATA_CLEAR()` — Einstellungen zurueck auf die
+einkompilierten Vorgaben, Schluessel bleiben. Welcher Slot laeuft, sagt
+ohnehin nicht die Version, sondern das Feld `app` im Konfigrahmen (fPort 9).
+
+`AT+DEVICE`, `AT+PDTA` und `AT+BTDC` gibt es hier **nicht** — sie kamen erst mit
+1.5.x, und 1.5.x gehoert nicht auf diese Hardware (Alarmknopf tot, siehe
+[README.md](README.md), Abschnitt "Warum nicht 1.5.x"). Wer sie eintippt,
+bekommt `ERROR`; das ist kein Tippfehler, sondern die fehlende Tabellenzeile.
 
 ## Anschluss
 
@@ -55,12 +68,11 @@ und Stromausfall — bis auf die vier Wege unter "Fallen".
 
 | Befehl | Wert | Wirkung |
 |---|---|---|
-| `AT+MODEL` | lesen | `TrackerD ,v1.5.3` |
+| `AT+MODEL` | lesen | `TrackerD ,v1.4.6` |
 | `ATZ` | ausfuehren | Konfiguration sichern, dann Neustart |
 | `AT+FDR` | ausfuehren | **Werksreset**: `DATA_CLEAR()` + Neustart, alle Einstellungen weg |
 | `AT+SLEEP` | ausfuehren | sofort in den Deep Sleep |
 | `AT+CFG` | ausfuehren | alle Einstellungen als `AT+X=Y`-Zeilen ausgeben |
-| `AT+DEVICE` | `13` / `22` | Geraetevariante (13 = TrackerD, 22 = TrackerD mit Sensorkopf). Nur v1.5.3. Bei `0` liefert `BatGet()` 0 mV und das GPS startet nie |
 
 ## LoRaWAN-Identitaet und Funk
 
@@ -89,7 +101,6 @@ und Stromausfall — bis auf die vier Wege unter "Fallen".
 | `AT+MTDC` | ms, min 60 | Sendetakt in Bewegung. Bei uns 180000 (3 min) |
 | `AT+ATDC` | ms | Sendetakt im Alarmzustand. 60000 |
 | `AT+ATST` | s, min 15 | wie lange das Geraet nach dem Aufwachen wach bleibt |
-| `AT+BTDC` | Einheiten, nicht 0 | BLE-Takt. Nur v1.5.3 |
 
 `AT+TDC` setzt auch `sys_time`, den Wert, aus dem `setup()` den Takt bei jedem
 Start neu nimmt. `AT+MTDC` gilt nur, wenn `AT+INTWK=1` ist.
@@ -102,7 +113,7 @@ Start neu nimmt. `AT+MTDC` gilt nur, wenn `AT+INTWK=1` ist.
 | `AT+INTWK` | `0` / `1` | Bewegungsmodus. 1 = der LIS3DH weckt das Geraet, danach gilt `MTDC` |
 | `AT+PM` | `0` / `1` | Schrittzaehler |
 | `AT+FD` | `0` / `1` | Sturzerkennung. **`FD=1` setzt `INTWK` auf 0** — beides zusammen geht nicht |
-| `AT+PT` | 2 Hex-Ziffern | Ansprechschwelle des Beschleunigungssensors, Vorgabe `14` |
+| `AT+PT` | 2 Hex-Ziffern | Ansprechschwelle des Beschleunigungssensors. Vorgabe hier `0A` = 10 LSB x 16 mg = 160 mg, damit Gehen mit 4 km/h weckt; Dragino liefert `14` (320 mg) |
 | `AT+EAT` | ms | Dauer des langen Tastendrucks zum Verlassen des Alarms |
 | `AT+BEEP` | `0` / `1` | Summer |
 | `AT+LON` | `0` / `1` | LED-Blitz beim Senden |
@@ -124,16 +135,16 @@ Start neu nimmt. `AT+MTDC` gilt nur, wenn `AT+INTWK=1` ist.
 | Befehl | Wert | Wirkung |
 |---|---|---|
 | `AT+PNACKMD` | `0`..`2` | Werks-Datalog. `1` sichert ungehoerte Fixes **und setzt `CFM=1`**, also bestaetigte Uplinks mit bis zu acht Versuchen je Rahmen |
-| `AT+PDTA` | Anzahl | gibt n Datensaetze ab Ringadresse 0 als Hex aus, 15 Byte je Zeile (17 bei Variante 22). Nur v1.5.3, nur lesend, veraendert die Zeiger nicht |
 
 Ein Datensatz: `lat` int32 (Grad ×10^6), `lon` int32, `jahr` uint16, dann
-Monat, Tag, Stunde, Minute, Sekunde als je ein Byte.
+Monat, Tag, Stunde, Minute, Sekunde als je ein Byte — dasselbe Format, in dem
+fPort 4 die nachgelieferte Spur bringt:
 
-Beispiel vom Geraet:
-
-    AT+PDTA=1
     02 d7 8a 84 00 b0 b0 5f 07 ea 08 18 09 28 18
     -> 47.616132 / 11.579487, 24.08.2026 09:40:24
+
+Einen Befehl, der den Ring ausliest, gibt es hier nicht: `AT+PDTA` kam erst mit
+1.5.x. Was drin liegt, zeigt der Zaehler `datalog count:` beim Start.
 
 ## BLE und WiFi
 

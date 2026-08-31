@@ -51,16 +51,20 @@ gesetzt hat.
 
 Das passiert nicht nur nach `AT+FDR`, sondern **bei jedem Wechsel der
 Firmware-Version**: die Firmware vergleicht `fire_version` (aus dem
-Versionsstring, v1.4.8 → 148) mit `fire_version_write` im EEPROM. Sind sie
+Versionsstring, v1.4.6 → 146) mit `fire_version_write` im EEPROM. Sind sie
 verschieden, setzt sie `FDR_flag = 1`, ruft `DATA_CLEAR()` und startet neu.
 
-> **Falle:** app0 traegt v1.4.8, das Bauwerk in diesem Verzeichnis v1.5.3. Wer
-> zwischen den beiden Slots hin und her bootet, loest **in jede Richtung** ein
-> Zuruecksetzen der Einstellungen aus — `AT+PNACKMD=1` ist danach wieder 0,
-> ebenso TDC und alles andere aus dem DATA-Bereich. Die Schluessel bleiben:
-> DevEUI/AppKey liegen in `KEY` (eeprom0), `DATA_CLEAR()` raeumt nur `DATA`
-> (eeprom1). Nach so einem Wechsel also immer [DATALOG.md](DATALOG.md)
+> **Falle:** app0 meldet 1.4.6, app1 meldet 1.4.8 — beide stehen auf derselben
+> Basis, aber der neue Bau sagt die geklonte Tag-Nummer statt der im Quelltext
+> stehen gebliebenen. Wer zwischen den Slots hin und her bootet, loest **in
+> jede Richtung** ein Zuruecksetzen aus: `AT+PNACKMD=1` ist danach wieder 0,
+> ebenso TDC, INTWK und alles andere aus dem DATA-Bereich. Die Schluessel
+> bleiben: DevEUI/AppKey liegen in `KEY` (eeprom0), `DATA_CLEAR()` raeumt nur
+> `DATA` (eeprom1). Nach so einem Wechsel also [DATALOG.md](DATALOG.md)
 > nacharbeiten und mit `AT+PNACKMD=?` nachsehen.
+>
+> An der Version ist damit zwar der Bau zu erkennen, nicht aber der Slot —
+> dafuer gibt es das Feld `app` im Konfigrahmen (fPort 9).
 
 ## Gruen leuchtet dauerhaft — fast immer haengt das USB-Kabel dran
 
