@@ -213,25 +213,6 @@ function decodeUplink(input) {
         };
       }
       break;
-    case 9:
-      {
-        // fPort 9: der Konfigrahmen. Das Geraet schickt seine Einstellungen
-        // schon als JSON-Text - hier wird nur der Rumpf zusammengesetzt und
-        // geparst, nichts umgerechnet. Enthaelt "app": den laufenden OTA-Slot,
-        // der ueber die Firmware-Version nicht zu erkennen ist (beide Slots
-        // tragen denselben Versionsstring, sonst loeste jeder Wechsel einen
-        // DATA_CLEAR aus).
-        var txt = '';
-        for (i = 0; i < bytes.length; i++) txt += String.fromCharCode(bytes[i]);
-        try {
-          return { data: JSON.parse(txt) };
-        } catch (e) {
-          // Ein abgeschnittener Rahmen soll die Zeile nicht kosten: der Text
-          // kommt roh durch, damit in der Datenbank wenigstens etwas steht.
-          return { data: { raw: txt }, warnings: ['fPort 9: kein gueltiges JSON'] };
-        }
-      }
-      break;
     case 5:
       {
         var decode = {};
