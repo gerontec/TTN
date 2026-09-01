@@ -4,12 +4,26 @@ Grundlage ist Draginos Tag **v1.4.8** (`repo148`; der Quelltext dort meldet
 sich als `v1.4.6`, weil v1.4.6/v1.4.7/v1.4.8/V1.4.9 auf denselben Commit
 `a66935b` zeigen und der Versionsstring nie nachgezogen wurde).
 
-**Werksverhalten bis auf drei Punkte:** die Startwerte fuer Sport-Mode und
-Datalog, und ein Alarm, der nach 99 Uplinks von selbst endet. Dazu zwei
-Patches, die keine Funktion des Geraets beruehren -- einer stellt her, was der
-Werksstand auf dem `DATA_CLEAR`-Weg ueberspringt, der andere behebt einen
-Bibliotheksfehler. Weckschwelle und GPS-Suche im Bewegungstakt bleiben
-unveraendert Dragino.
+**Werksverhalten bis auf zwei Vorgaben:** Sport-Mode und Datalog sind ab Werk
+an. Dazu zwei Patches, die keine Funktion aendern, sondern Fehler beheben -- die
+Pad-Holds beim Start und die Restlaengenpruefung in arduino-lmic.
+
+Dazu ein Alarm-Selbstende nach 99 gueltigen Positionen.
+
+`fix_gps_after_motion.py` gegen die im Bewegungstakt uebersprungene GPS-Suche
+war zeitweise drin und ist wieder entfernt; ein frueheres Selbstende zaehlte
+Uplinks statt Positionen und ist durch die jetzige Fassung ersetzt.
+
+## Warum Positionen und nicht Uplinks
+
+Am 31.08.2026 gingen 26 Alarmrahmen hintereinander mit `Latitude=0` hinaus, im
+Takt von 246 s. Das ist `ATDC` (60 s) plus `FTIME` (180 s): die Suche lief
+jedes Mal in den Zeitablauf, statt uebersprungen zu werden. Ein Uplink-Zaehler
+haette den Alarm nach 99 solchen Fehlversuchen beendet, ohne dass je eine
+Position uebermittelt worden waere.
+
+Der Preis ist die Kehrseite davon und bewusst in Kauf genommen: ohne Empfang
+endet der Alarm nie von selbst, dann helfen nur die zehn Klicks.
 
 ## Warum so streng
 
@@ -31,7 +45,7 @@ tut.
 |---|---|---|
 | `fix_holds.py` | `src/TrackerD.ino` | **Bauvoraussetzung, keine Funktion.** Loest `gpio_hold`/`rtc_gpio_hold` ganz vorn in `setup()`, vor `os_init()`. Der Werksstand loest sie erst im Kaltstartzweig -- den der `DATA_CLEAR`-Weg mit `ESP.restart()` vorher verlaesst. MOSI (GPIO 27) bleibt dann abgeklemmt, `radio_init()` sieht den SX1276 nicht, `os_init()` endet in `ASSERT(0)`, `oslmic.c:53`. |
 | `fix_defaults_on.py` | `src/TrackerD.ino` | Sport-Mode (`AT+INTWK=1`) und Datalog (`AT+PNACKMD=1`) ab Werk an, statt Draginos `0`/`0`. `frame_flag` wird mitgesetzt, weil `PNACKmd` ohne bestaetigte Uplinks wirkungslos bleibt. Greift im `FDR_flag == 0`-Zweig, also nach `DATA_CLEAR` -- Werksreset oder Wechsel des Versionsstrings. |
-| `fix_alarm_uplink_stop.py` | `src/TrackerD.ino` | Ein Alarm endet nach 99 Uplinks. Gezaehlt wird in `RTC_DATA_ATTR`, also nur im Speicher: der Zaehler ueberlebt den Deep Sleep zwischen zwei Alarmrahmen, aber keinen Stromausfall, und geht nie ins NVRAM. `sys.alarm_count` bleibt unbenutzt, weil der ueber `config_Write()` bei jeder Runde in den Flash ginge. Beendet wird mit denselben Zuweisungen wie der Zehnfach-Klick. |
+| `fix_alarm_gpsfix_stop.py` | `src/TrackerD.ino` | Ein Alarm endet nach 99 **gueltigen Positionen** -- Rahmen mit `Latitude=0` und die Unterspannungsmarke `-1` zaehlen nicht mit. Zaehler in `RTC_DATA_ATTR`, also nur im Speicher; `sys.alarm_count` bleibt unbenutzt, der ginge ins NVRAM. Beendet wird mit denselben Zuweisungen wie der Zehnfach-Klick. |
 | `fix_aes_len.py` | `lib/arduino-lmic` | **Bibliotheksfehler, keine Verhaltensaenderung.** `os_aes()` prueft die Restlaenge in 8 statt 16 Bit; Rahmen ab 128 Byte gingen unverschluesselt und ohne gueltigen MIC ueber die Luft. Betrifft jede mitgelieferte Kopie der Bibliothek, auch Draginos. Gemeldet als [mcci-catena/arduino-lmic#1071](https://github.com/mcci-catena/arduino-lmic/issues/1071), Korrektur als [#1072](https://github.com/mcci-catena/arduino-lmic/pull/1072). Solange die nicht drin ist, bleibt der Patch hier. |
 
 Jedes Skript prueft seinen Anker selbst und bricht ab, statt daneben zu
@@ -53,24 +67,6 @@ Breitengrad -1360, Monat 215 und Jahr 55177; im GPX-Report ergab der Tagestrack
 daraufhin eine Ausdehnung von 19.601 km. Bestaetigt gesendet, also mit bis zu
 acht Versuchen je Rahmen. Die drei Zeilen dagegen stehen im Docstring des
 Patches.
-
-## Das Alarm-Selbstende
-
-Der Werksstand haette die Mechanik: `sys.alarm_count++` zaehlt die Alarmrahmen,
-ein Block prueft auf `== 60`. Erreicht wird die 60 nie, weil `setup()` den
-Zaehler bei jedem Aufwachen nullt -- und jeder Alarmzyklus ist wegen des Deep
-Sleep ein eigener Boot. Am 31.08.2026 lief ein versehentlich ausgeloester Alarm
-darum ueber eine Stunde und erzeugte im ATDC-Takt 338 Uplinks.
-
-Der Patch fasst `alarm_count` nicht an, sondern zaehlt selbst in `RTC_DATA_ATTR`.
-Ein Schreibzugriff bleibt und ist unvermeidbar: `sys.alarm` liegt im EEPROM
-(`common.cpp` 505/765) und wuerde ohne `config_Write()` beim naechsten
-Aufwachen wieder auf 1 stehen. Geschrieben wird also der Alarmzustand, genau
-einmal beim Beenden -- nicht der Zaehler.
-
-Gezaehlt werden `do_send()` (fPort 2/3) und `Alarm_send()` (fPort 7); der
-Statusrahmen aus `device_send()` (fPort 5) gehoert zum Join und zaehlt nicht
-mit. Bei ATDC 60 s sind 99 Rahmen rund 99 Minuten Alarm.
 
 ## Warum `fix_holds.py` dazugehoert
 

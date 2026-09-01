@@ -20,21 +20,32 @@ Der Block laeuft nur bei `FDR_flag == 0`, also nach einem `DATA_CLEAR`:
 Werksreset oder Wechsel des Versionsstrings. Genau dort stehen auch Draginos
 eigene Vorgaben, die hier ueberschrieben werden.
 
-**Was dieser Patch bewusst NICHT tut:** die drei Ringzeiger des Spurpuffers
-nullen. Gemessen am 31.08.2026: nach dem Einschalten des Datalogs spulte das
-Geraet 22 Rahmen mit Unsinn aus -- Breitengrad -1360, Monat 215, Jahr 55177 --,
-weil im Ring Reste eines anderen Firmwarestandes lagen und die Zeiger nicht
-dazu passten. Dieselben Rahmen stehen in `wagodb.loradevice` vom 31.08.
-zwischen 11:56 und 12:03 auf fPort 4 und haben den Tagestrack im GPX-Report
-auf eine Ausdehnung von 19.601 km gebracht. Wer den Datalog ab Werk
-einschaltet, faengt sinnvollerweise mit leerem Ring an; die drei Zeilen dafuer
-waeren
+Die Ringzeiger des Spurpuffers werden hier **nicht** angefasst. Sie liegen im
+DATA-Bereich (`common.cpp` 536/539/580), und `DATA_CLEAR()` schreibt 0 ueber
+alle 256 Byte davon. Da dieser Block ausschliesslich im `FDR_flag == 0`-Zweig
+laeuft, also nur nach einem `DATA_CLEAR`, stehen sie zu diesem Zeitpunkt schon
+auf 0 -- sie hier nochmal zu setzen waere Zierde, kein Schutz.
 
-    sys.addr_gps_write = 0;
-    sys.addr_gps_read  = 0;
-    sys.gps_write      = 0;
+Wichtig ist der Fall, in dem `DATA_CLEAR()` **nicht** laeuft: beim erneuten
+Flashen desselben Versionsstrings erkennt die Firmware keinen Wechsel, und die
+alten Zeiger bleiben stehen. Stammen sie aus einem Bau mit anderer Feldreihen-
+folge, zeigen sie ins Leere. Am 31.08.2026 gingen daraufhin 22 Rahmen mit
+Unsinn hinaus -- Breitengrad -1360, Monat 215, Jahr 55177 --, nachzulesen in
+`wagodb.loradevice` zwischen 11:56 und 12:03 auf fPort 4; im GPX-Report ergab
+der Tagestrack daraus eine Ausdehnung von 19.601 km.
 
-Sie sind hier nicht drin, weil nur die zwei Vorgaben bestellt waren.
+Schlimmer als die unlesbaren Rahmen ist die Nebenwirkung: `loggpsdata_send`
+wird auf 1 gesetzt, sobald der Ring 14 Eintraege traegt (`TrackerD.ino:288`),
+und dieses Flag steht als Bedingung in der GPS-Suche (`TrackerD.ino:1286`).
+Zurueck auf 0 geht es erst, wenn der Ring leergespult ist
+(`gps_write == addr_gps_read`). Passen Zeiger und Inhalt nicht zusammen, wird
+das nie wahr: das Geraet sucht dann **gar kein GPS mehr**, sondern liefert nur
+noch Muell nach. Gemessen: 80 Rahmen mit `Latitude=0` in Folge, Fixquote 2 %,
+waehrend derselbe Stand mit leerem Ring 340 Rahmen mit 100 % lieferte.
+
+Der Schutz dagegen steht nicht hier, sondern im Flashweg: `flash_trackerD.py`
+schickt nach jedem Flash ein `AT+FDR` und erzwingt damit das `DATA_CLEAR`,
+unabhaengig vom Versionsstring.
 """
 import os
 import sys
