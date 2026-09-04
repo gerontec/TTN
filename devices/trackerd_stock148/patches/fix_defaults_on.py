@@ -77,5 +77,24 @@ neu = alt + """
         sys.Intwk      = 0;   /* Sport: 1 = an, 0 = aus */
         sys.PNACKmd    = 1;
         sys.frame_flag = 1;"""
-open(p, "w", encoding="utf-8", errors="surrogateescape").write(s.replace(alt, neu))
+s = s.replace(alt, neu)
+
+# Zweiter Griff: unbedingt bei jedem Kaltstart, nicht nur im FDR_flag==0-Zweig.
+# Am 04.09.2026 gemessen -- mit dem Patch oben im Bau meldete der Statusrahmen
+# trotzdem FLAG 0x02, also PNACKmd=0: der FDR_flag==0-Zweig lief nicht. Ohne
+# bestaetigte Uplinks gibt es kein ausbleibendes ACK, und der Datalog laeuft
+# nie an. Der Preis ist, dass AT+PNACKMD=0 nur bis zum naechsten Kaltstart
+# haelt -- gewollt, "Datalog immer an" war die Bestellung.
+alt2 = """      sys.tdc = sys.sys_time;
+      gpio_deep_sleep_hold_dis();"""
+neu2 = """      /* Datalog unbedingt an, unabhaengig vom FDR_flag-Zweig. */
+      sys.PNACKmd    = 1;
+      sys.frame_flag = 1;
+      sys.tdc = sys.sys_time;
+      gpio_deep_sleep_hold_dis();"""
+if s.count(alt2) != 1:
+    sys.exit("Kaltstart-Anker nicht eindeutig (%d)" % s.count(alt2))
+s = s.replace(alt2, neu2, 1)
+
+open(p, "w", encoding="utf-8", errors="surrogateescape").write(s)
 print("gepatcht:", p)
