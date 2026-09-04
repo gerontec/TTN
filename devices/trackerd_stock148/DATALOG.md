@@ -67,10 +67,17 @@ zurueck.
 4095 erreicht: 4095 / 15 = **273**. Bei `sensor_type 22` sind es 17 Byte und
 eine Grenze von 4080, also 240 Datensaetze.
 
-**Ein Datensatz je ungehoertem Zyklus** — auch ohne GPS-Fix. Der Puffer
-fuellt sich also im Sendetakt, nicht im Fix-Takt: `sys` liegt im RAM und ist
-nach jedem Deep-Sleep genullt, ein Zyklus ohne Fix legt deshalb einen
-Null-Datensatz ab. Im Tunnel oder in der Tiefgarage verbrennt das Plaetze.
+**Ein Datensatz je ungehoertem Zyklus — aber nur mit gueltiger Position.**
+Der Schreibaufruf steht hinter `else if(sensor.latitude !=0 && sensor.longitude
+!=0)`; ein Zyklus ohne Fix legt **nichts** ab. (Hier stand frueher das
+Gegenteil; am 04.09.2026 am Quelltext nachgesehen und korrigiert.) Das ist auch
+richtig so: ein Null-Datensatz traegt keine Ortsangabe und kostet einen der 273
+Plaetze — im Tunnel waere der Puffer sonst voll, bevor die erste brauchbare
+Position darinsteht.
+
+**Geloggt wird nach Ereignis, nicht nach Zeit.** Die Aufzeichnungsdichte ist die
+Zyklusdichte, also `TDC` (im Alarm `ATDC`) plus Suchzeit. `FTIME` begrenzt nur
+die Suche je Zyklus, nicht den Logtakt.
 
 Wie lange das reicht, folgt daraus unmittelbar:
 
