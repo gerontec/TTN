@@ -1,11 +1,21 @@
 #!/usr/bin/env python3
-"""Sport-Mode und Datalog ab Werk an.
+"""Datalog ab Werk an; Sport-Mode ueber eine Zeile umstellbar.
 
 Draginos Vorgaben sind `Intwk = 0` (Bewegungsmodus aus) und `PNACKmd = 0`
-(Datalog aus). Beides gehoert hier eingeschaltet:
+(Datalog aus). Beides wird hier eingeschaltet:
 
-* **`AT+INTWK=1`** -- der Beschleunigungssensor weckt das Geraet, danach gilt
-  `AT+MTDC` statt `AT+TDC`.
+* **`AT+INTWK`** -- der Beschleunigungssensor weckt das Geraet, danach gilt
+  `AT+MTDC` statt `AT+TDC`. Der Wert steht als eine Zeile im eingefuegten
+  Block und wird zum Vergleichen umgestellt; **derzeit 0 (aus)**.
+
+  Zur Vorgeschichte: die Kombination stand im Verdacht, die GPS-Suche zu
+  blockieren -- Sport allein lieferte 340 Rahmen mit 100 % Fixquote, Datalog
+  allein 96 %, beides zusammen 2 %. In der Nacht auf den 01.09.2026 wurde der
+  Verdacht **widerlegt**: mit `Intwk=0` und `PNACKmd=1` trat dasselbe Muster
+  auf (Fix nur im zweiten Rahmen nach dem Neustart, danach keiner mehr).
+  Ebenso ausgeschlossen: die Alarmzaehler, der Spurpuffer, GPIO 12 und die
+  `LMIC.seqnoUp`-Blocke. Ungeklaert bleibt, warum Draginos Binary Fixes
+  liefert und jeder Eigenbau nicht.
 * **`AT+PNACKMD=1`** -- Uplinks gehen bestaetigt hinaus; bleibt das ACK aus,
   legt `EV_TXCOMPLETE` den Fix ueber `gps_data_Weite()` im NVS ab und liefert
   ihn spaeter ueber fPort 4 nach. Ohne das ist die Datalog-Kette tot, und jeder
@@ -64,7 +74,7 @@ neu = alt + """
         /* Sport-Mode und Datalog ab Werk an. frame_flag gehoert zu PNACKmd:
            ohne bestaetigte Uplinks gibt es kein ausbleibendes ACK, und der
            Spurpuffer wird nie gefuellt. */
-        sys.Intwk      = 1;
+        sys.Intwk      = 0;   /* Sport: 1 = an, 0 = aus */
         sys.PNACKmd    = 1;
         sys.frame_flag = 1;"""
 open(p, "w", encoding="utf-8", errors="surrogateescape").write(s.replace(alt, neu))

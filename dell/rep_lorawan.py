@@ -11,6 +11,12 @@ gelesen, nie geschrieben.
     ./rep_lorawan.py --quelle alle    # TTN und lokaler ChirpStack gemischt
     ./rep_lorawan.py --ereignis alle  # auch join/txack/solved statt nur 'up'
     ./rep_lorawan.py --status         # Geraeteeinstellungen aus fPort 5
+
+Ueber der Tabelle stehen die beiden Schalter, die sich staendig von selbst
+zurueckstellen: **Datalog** (`PNACKMD`) und **Sport** (`INTWK`). Beide kommen
+aus dem letzten Statusrahmen auf fPort 5; beim Datalog kommt der laufende
+Beleg dazu, weil `PNACKMD=1` zugleich auf bestaetigte Uplinks umschaltet und
+die bei jedem Rahmen sichtbar sind.
     ./rep_lorawan.py --roh            # ganze Zeile als JSON, zum Weiterreichen
 
 `source` trennt die beiden Wege: 'TTN' kommt ueber The Things Network herein,
@@ -161,6 +167,78 @@ def tabelle(kopf, reihen):
     return muster
 
 
+def datalog_zustand(host, geraet):
+    """Stand von Datalog und Sport, als Liste fertiger Zeilen.
+
+    Ist der Datalog an? Zwei unabhaengige Quellen, beide ohne Geraetezugriff.
+
+    `PNACKMD` steht als Bit 2 im Statusrahmen auf fPort 5 -- die verlaessliche
+    Auskunft, aber nur so frisch wie der letzte Statusrahmen, und der kommt
+    im Wesentlichen nach einem Join.
+
+    Der laufende Beleg sind die Uplinks selbst: `PNACKMD=1` schaltet zugleich
+    auf bestaetigte Uplinks um (`CFM=1`), in `loradevice` also `confirmed=1`.
+    Steht das bei den juengsten Rahmen, ist der Datalog jetzt an -- unabhaengig
+    davon, wie alt der letzte Statusrahmen ist.
+    """
+    with pymysql.connect(host=host, **DB) as conn:
+        with conn.cursor() as cur:
+            wo, werte = "", []
+            if geraet:
+                wo = " AND (dev_name LIKE %s OR dev_eui LIKE %s)"
+                werte = ["%" + geraet + "%", "%" + geraet + "%"]
+            cur.execute("SELECT ts, payload_hex FROM loradevice WHERE event='up'"
+                        " AND f_port=%s" + wo + " ORDER BY id DESC LIMIT 1",
+                        [STATUS_PORT] + werte)
+            r = cur.fetchone()
+            # DictCursor: Spalten benennen, sonst entpackt man die Schluessel.
+            # DictCursor: Spalten benennen, sonst entpackt man die Schluessel.
+            cur.execute("SELECT ts, confirmed FROM loradevice WHERE event='up'"
+                        " AND f_port<>%s" + wo + " ORDER BY id DESC LIMIT 5",
+                        [STATUS_PORT] + werte)
+            uplinks = cur.fetchall()
+            letzte = [int(x["confirmed"] or 0) for x in uplinks]
+
+    st = status_zerlegen(r["payload_hex"]) if r else None
+    if not st:
+        return ["kein Statusrahmen (fPort %d) gefunden" % STATUS_PORT]
+
+    stand = zeit(r["ts"])
+    # Die Version verraet, welche Partition laeuft: app0 meldet 1.4.8
+    # (Werksfirmware), der Eigenbau in app1 meldet 1.4.6, weil Dragino den
+    # Versionsstring im Quelltext seit v1.4.6 nicht nachgezogen hat.
+    slot = {"1.4.8": "app0, Werksfirmware",
+            "1.4.6": "app1, Eigenbau"}.get(st["firmware"], "unbekannter Slot")
+    zeilen = ["Firmware  %-8s  %s   Modell %s, Band %s, Batterie %.3f V"
+              % (st["firmware"], slot, st["modell"], st["band"], st["batv"])]
+    # Datalog: Statusrahmen sagt die Einstellung, die Uplinks sagen den
+    # Ist-Zustand -- PNACKMD=1 schaltet zugleich auf bestaetigte Uplinks um,
+    # und die kommen bei jedem Rahmen, nicht nur nach einem Join.
+    # Massgeblich ist die juengere der beiden Quellen. Der Statusrahmen kommt
+    # im Wesentlichen nur nach einem Join und ist deshalb oft veraltet -- ein
+    # Downlink, der PNACKMD umschaltet, taucht dort erst beim naechsten Join
+    # auf, in den bestaetigten Uplinks dagegen sofort.
+    if uplinks and uplinks[0]["ts"] > r["ts"]:
+        urteil = "AN" if letzte[0] else "AUS"
+        quelle = ("Uplink %s %sbestaetigt (%d von %d)  |  Statusrahmen %s sagte %s"
+                  % (zeit(uplinks[0]["ts"]), "" if letzte[0] else "NICHT ",
+                     sum(letzte), len(letzte), stand,
+                     "AN" if st["pnackmd"] else "AUS"))
+    else:
+        urteil = "AN" if st["pnackmd"] else "AUS"
+        quelle = "Statusrahmen %s" % stand
+        if letzte:
+            quelle += ("  |  juengster Uplink %sbestaetigt (%d von %d)"
+                       % ("" if letzte[0] else "NICHT ", sum(letzte), len(letzte)))
+    zeilen.append("Datalog (PNACKMD)  %-4s  %s" % (urteil, quelle))
+    # Sport: nur aus dem Statusrahmen. Das Feld `Transport` im Positionsrahmen
+    # taugt nicht dafuer -- es meldet, ob der letzte Weckruf von der Bewegung
+    # kam, nicht ob der Modus eingeschaltet ist.
+    zeilen.append("Sport   (INTWK)    %-4s  Statusrahmen %s"
+                  % ("AN" if st["intwk"] else "AUS", stand))
+    return zeilen
+
+
 def drucke(zeilen):
     """Aelteste oben, damit man den Verlauf von oben nach unten liest."""
     kopf = ("Zeit", "Q", "Ereig", "Geraet", "Po", "FCnt", "DR", "MHz",
@@ -264,6 +342,13 @@ def main():
         print("keine Pakete (quelle=%s ereignis=%s%s)"
               % (a.quelle, a.ereignis, "" if port is None else " port=%d" % port))
         return 0
+    if not a.roh:
+        try:
+            for z in datalog_zustand(a.db_host, a.geraet):
+                print(z)
+            print()
+        except pymysql.Error:
+            pass          # der Bericht selbst ist wichtiger als der Kopf
     if a.roh:
         print(json.dumps(list(reversed(zeilen)), default=str,
                          ensure_ascii=False, indent=2))

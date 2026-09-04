@@ -37,8 +37,22 @@ Alarmzustand, genau einmal beim Beenden -- nicht der Zaehler.
 
 Der ausloesende Rahmen geht noch mit gesetztem Alarmbit und mit seiner
 Position hinaus: gezaehlt wird, nachdem die Nutzlast steht, aber vor
-`LMIC_setTxData2()`. Beendet wird mit denselben Zuweisungen wie der
-Zehnfach-Klick in `attachMultiClick()`.
+`LMIC_setTxData2()`. **Eigenstaendig heisst: kein Griff in fremden Zustand.** Der Zaehler haelt
+seinen Wert in `alarm_fixe` (RTC, nie im EEPROM) und setzt beim Ausloesen genau
+eine fremde Variable -- `sys.alarm`, den Alarmzustand selbst, plus das noetige
+`config_Write()`, weil er im EEPROM liegt und beim Booten zurueckgelesen wird.
+
+Der Zehnfach-Klick in `attachMultiClick()` setzt daneben `gps_alarm`,
+`gps_start`, `keep_flag`, `exti_flag`, `gps_work_flag` und `alarm_count`. Die
+sind hier bewusst **nicht** kopiert: es sind interne Modus- und Zaehlerfelder
+der Firmware, `gps_start` und `exti_flag` steuern ausgerechnet den Weck- und
+Suchpfad, und `alarm_count` ist Draginos eigener Zaehler, dessen Nullung an der
+GPS-Suche haengt (`TrackerD.ino:1329`). Wer sie von aussen setzt, schreibt in
+Mechanismen, die dieser Patch nicht kennt.
+
+**Der Preis:** `sys.gps_alarm` bleibt stehen, bis die Firmware es selbst
+zuruecksetzt. Sollte sich zeigen, dass der Alarmpfad danach noch nachhaengt,
+ist das die Stelle -- dann gehoert genau diese eine Zeile dazu, mit Begruendung.
 """
 import os
 import sys
@@ -77,18 +91,11 @@ static void alarm_fix_zaehlen(void)
     return;
 
   Serial.printf("Alarm beendet: %u gueltige Positionen\\r\\n", alarm_fixe);
-  /* Derselbe Ausstieg wie der Zehnfach-Klick in attachMultiClick(). Das
-     config_Write() gilt dem Alarmzustand, nicht dem Zaehler: sys.alarm liegt
-     im EEPROM und stuende sonst beim naechsten Aufwachen wieder auf 1. */
-  sys.gps_alarm     = 0;
-  sys.gps_start     = 2;
-  sys.alarm         = 0;
-  sys.keep_flag     = 0;
-  sys.alarm_count   = 0;
-  sys.exti_flag     = 4;
-  sys.gps_work_flag = false;
-  alarm_fixe        = 0;
-  sys.config_Write();
+  /* Nur der Alarmzustand. Kein Griff in gps_start, exti_flag, keep_flag,
+     gps_work_flag oder alarm_count -- das sind interne Felder der Firmware. */
+  alarm_fixe = 0;
+  sys.alarm  = 0;      /* der Alarmzustand selbst, mehr nicht */
+  sys.config_Write();  /* er liegt im EEPROM und wird beim Booten gelesen */
 }
 
 """ + anker)
