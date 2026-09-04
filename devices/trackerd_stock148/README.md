@@ -44,10 +44,8 @@ tut.
 | Patch | wirkt auf | warum |
 |---|---|---|
 | `fix_holds.py` | `src/TrackerD.ino` | **Bauvoraussetzung, keine Funktion.** Loest `gpio_hold`/`rtc_gpio_hold` ganz vorn in `setup()`, vor `os_init()`. Der Werksstand loest sie erst im Kaltstartzweig -- den der `DATA_CLEAR`-Weg mit `ESP.restart()` vorher verlaesst. MOSI (GPIO 27) bleibt dann abgeklemmt, `radio_init()` sieht den SX1276 nicht, `os_init()` endet in `ASSERT(0)`, `oslmic.c:53`. |
-| `fix_pad_levels_sleep.py` | `src/TrackerD.ino` | **Die Ursache der fehlenden Positionen.** Legt GPS_POWER (GPIO 12) und GPS_RESET (GPIO 25) vor dem Deep Sleep als Ausgang auf LOW und haelt sie dort; geloest wird der Halt in `setup()` neben dem von GPIO 27. Der Werksstand laesst beide Pads floaten -- `gpio_reset_pin()` macht Eingaenge mit Pull-up daraus, und der Pull-up faellt im Schlaf weg. GPIO 12 ist zugleich MTDI, der Strapping-Pin fuer die Flash-Spannung. |
 | `fix_defaults_on.py` | `src/TrackerD.ino` | Datalog (`AT+PNACKMD=1`) ab Werk an; Sport (`AT+INTWK`) bleibt ausdruecklich auf 0. Beides zusammen lieferte in diesem Bau keine Positionen mehr -- Sport allein 340 Rahmen mit 100 % Fixquote, Datalog allein 96 %, zusammen 2 %. `frame_flag` wird mitgesetzt, weil `PNACKmd` ohne bestaetigte Uplinks wirkungslos bleibt. Greift im `FDR_flag == 0`-Zweig, also nach `DATA_CLEAR` -- Werksreset oder Wechsel des Versionsstrings. |
 | `fix_alarm_gpsfix_stop.py` | `src/TrackerD.ino` | Ein Alarm endet nach 99 **gueltigen Positionen** -- Rahmen mit `Latitude=0` und die Unterspannungsmarke `-1` zaehlen nicht mit. Zaehler in `RTC_DATA_ATTR`, also nur im Speicher; `sys.alarm_count` bleibt unbenutzt, der ginge ins NVRAM. Beendet wird mit denselben Zuweisungen wie der Zehnfach-Klick. |
-| `fix_gps_uart_once.py` | `src/GPS.cpp` | **Verdacht auf die fehlenden Positionen.** Baut den GPS-UART je Wachphase nur einmal auf. `GPS_Init()` kommt auf dem Aufwachweg zweimal -- aus `setup()` (`gps_start == 2`) und aus `alarm_state()` (`exti_flag == 3`); ein zweites `SerialGPS.begin()` ohne `end()` dazwischen ist `uart_driver_install()` auf einen schon installierten Treiber. Beim Kaltstart steht `gps_start` auf 1, der Zweig in `setup()` faellt weg und `begin()` laeuft genau einmal -- und genau dieser Zyklus liefert als einziger eine Position. |
 | `fix_datalog_sensitive.py` | `src/TrackerD.ino` | Datalog empfindlicher: der `TXRX_NACK`-Zweig **loescht** ab Werk den ganzen Spurpuffer, wenn `0 < addr_gps_write < 14` -- also im Zustand zwischen zwei Datensaetzen. Bleibt nur noch das Anhaengen. Dazu wird auch bei `EV_JOIN_FAILED` und `EV_REJOIN_FAILED` gepuffert: ohne Join wird nie ein ACK erwartet, der ausbleiben koennte, und der Werks-Datalog laesst die Position fallen. |
 | `fix_aes_len.py` | `lib/arduino-lmic` | **Bibliotheksfehler, keine Verhaltensaenderung.** `os_aes()` prueft die Restlaenge in 8 statt 16 Bit; Rahmen ab 128 Byte gingen unverschluesselt und ohne gueltigen MIC ueber die Luft. Betrifft jede mitgelieferte Kopie der Bibliothek, auch Draginos. Gemeldet als [mcci-catena/arduino-lmic#1071](https://github.com/mcci-catena/arduino-lmic/issues/1071), Korrektur als [#1072](https://github.com/mcci-catena/arduino-lmic/pull/1072). Solange die nicht drin ist, bleibt der Patch hier. |
 
@@ -71,60 +69,63 @@ daraufhin eine Ausdehnung von 19.601 km. Bestaetigt gesendet, also mit bis zu
 acht Versuchen je Rahmen. Die drei Zeilen dagegen stehen im Docstring des
 Patches.
 
-## Warum die Positionen fehlten
+## Warum die Positionen fehlten: der Arduino-Core
 
-Fuenf Tage lang lieferte der Eigenbau nur im ersten Zyklus nach einem Kaltstart
-eine Position, danach keine mehr -- am 04.09.2026 im Alarmtakt 39 Rahmen in
-Folge mit `Latitude=0`, waehrend die Werksfirmware am selben Platz jeden Zyklus
-traf. Der Grund steht im Schlafpfad:
+Vom 27.08. bis zum 04.09.2026 lieferte jeder Eigenbau nur im ersten Suchlauf
+nach einem Neustart eine Position und danach keine mehr -- im Alarmtakt
+0 Positionen aus 39 Zyklen, waehrend die Werksfirmware am selben Platz jeden
+Zyklus traf. Sechs Erklaerungsversuche waren falsch: floatende Pads im Schlaf,
+ein doppeltes `SerialGPS.begin()`, von `AT+FDR` genullte `PDOP`/`FTIME`, der
+`$GPGSA`-Talker, ein ueber den Schlaf durchlaufendes GNSS-Modul und der
+Juni-2024-Quelltext als Grundlage.
 
-    GPS_shutdown();            // digitalWrite(GPS_POWER, LOW)
-    ...
-    gpio_reset();              // gpio_reset_pin(12), (25) -> Eingang + Pull-up
-    esp_deep_sleep_start();
+Gemessen wurde es am 04.09.2026 an der seriellen Konsole, Port einmal geoeffnet,
+`AT+SHOWID=1`, gleiche Hardware, gleicher Platz, wenige Minuten auseinander:
 
-`gpio_reset_pin()` macht aus beiden Ausgaengen Eingaenge mit Pull-up, und der
-Pull-up liegt in der digitalen Domaene -- die im Deep Sleep abgeschaltet wird.
-**Im Schlaf haengt an GPS_RESET und GPS_POWER nichts mehr.**
+| Bau | NMEA nach `Start searching for GPS...` |
+|---|---|
+| app0 (Werk) | nach **2 s**, dutzende Saetze, `Fix Status` 0 -> 1 |
+| Fork mit arduino-esp32 **2.0.14** | in **180 s keine einzige Zeile** |
+| Fork mit arduino-esp32 **2.0.3** | nach **1 s**, wie app0; Fix nach 113 s |
 
-GPIO 12 ist dabei nicht irgendein Pad, sondern **MTDI**. Am Geraet ausgelesen:
+**Der Fehler liegt im Bau, nicht im Quelltext.** Der GPS-UART haengt auf
+GPIO 9/10 -- beim ESP32-PICO-D4 sind das SD_DATA_2/3, also Flash-Pads, in der
+DIO-Betriebsart frei. Mit arduino-esp32 2.0.14 geht `HardwareSerial` ueber den
+IDF-UART-Treiber (im Image stehen `uart_context`, `uart_event_task`,
+`uart_set_rx_full_threshold`, `uart_set_rx_timeout`) und empfaengt auf diesen
+Pins nichts. Draginos app0 traegt als einziges UART-Symbol
+`uart_enable_intr_mask`, spricht den UART also direkt an.
 
-    XPD_SDIO_FORCE (BLOCK0)  Ignore MTDI pin (GPIO12) for VDD_SDIO on reset = False
-    Flash voltage (VDD_SDIO) determined by GPIO12 on reset
-                             (High for 1.8V, Low/NC for 3.3V)
+Deshalb steht in `platformio.ini` `espressif32@4.4.0` (arduino-esp32 2.0.3):
+der aelteste Core, der `EEPROMClass("eeprom0")` kennt -- 2.0.2 uebersetzt den
+Quelltext nicht -- und der `uart_set_rx_timeout`/`setRxFIFOFull` noch nicht
+benutzt; die kamen mit 2.0.5.
 
-Die eFuse ist nicht gebrannt, der ROM-Bootlader liest MTDI also bei jedem Reset
--- und ein Deep-Sleep-Aufwacher ist ein Reset. Ein floatender MTDI entscheidet
-damit bei jedem Aufwachen neu ueber die Flash-Spannung des eingebauten
-3,3-V-Flash im PICO-D4.
+Auch die Binaergroesse passt: 1.383.808 Byte mit 2.0.3 gegen 1.603.504 mit
+2.0.14, bei app0 sind es 1.347.584.
 
-Dieselbe eFuse-Zeile schliesst die naheliegende Gegenidee aus, GPIO 12 ueber den
-Schlaf HIGH zu halten und das GNSS-Modul warm zu bekommen: HIGH heisst 1,8 V.
-Das kann auch Draginos Werksfirmware nicht tun.
+## Was app0 ist -- und wo es nicht liegt
 
-Gemessen am 04.09.2026, gleicher Platz, gleiches Suchfenster, ein Patch
-Unterschied: 10:50 bis 13:36 im Alarmtakt **0 Positionen aus 39 Zyklen**; nach
-dem Patch der erste Alarmzyklus um 13:51:35 mit `47.679676 / 11.579666`, 95 s
-nach dem Knopfdruck -- also vorzeitig beendete Suche statt Zeitablauf.
+Draginos ausgeliefertes app0 ist **nicht** der veroeffentlichte Quelltext, und
+es gibt ihn nirgends:
 
-## Was app0 anders macht
-
-Draginos ausgeliefertes app0 ist **nicht** der veroeffentlichte Quelltext. Aus
-dem Stringvergleich der beiden Images:
-
-| | app0 (Werk) | Bau aus dem Quelltext |
+| | `AT+CHS` / `AT+GF` | `AT+DEVICE` |
 |---|---|---|
-| Versionsstring | `TrackerD ,v1.4.8` | `TrackerD ,v1.4.6` |
-| AT-Befehle | zusaetzlich `AT+CHS`, `AT+GF` | fehlen |
-| GPS-Ausgabe | `Fix Time:%ds` **und** `Fix Time:%dms` | nur `Fix Time:%ds` |
-| Pad-Holds | `gpio_hold_en`/`gpio_hold_dis`, `rtc_gpio_hold_en`/`rtc_gpio_hold_dis` | keine davon |
-| Toolchain | Arduino IDE 1.8.5, Core Okt. 2021, IDF `v4.4-dev-3544` | espressif32@6.5.0, arduino-esp32 2.0.14, IDF `v4.4.6` |
+| a66935bc7 (03.08.2023, Tags v1.4.6-V1.4.9) | -- | -- |
+| **app0 (Werk, meldet v1.4.8)** | **ja** | **nein** |
+| 496b91718 (18.06.2024, Tags V1.5.0/v1.5.1) | ja | **ja** |
 
-Der Nachweis fuer die Holds ist der Pruefstring
-`Only output-capable GPIO support this function`: er steht in IDF v4.4
-ausschliesslich im Rumpf von `gpio_hold_en()` und ist nur in app0 einlinkt. Der
-Quelltext auf GitHub ruft keine Hold-Funktion auf, er kennt nur
-`rtc_gpio_isolate(GPIO_NUM_27)` fuer MOSI.
+`AT+DEVICE` kam mit der Verschmelzung von TrackerD und TrackerD-LS. app0 liegt
+also **zwischen** den beiden veroeffentlichten Commits. Draginos Tags helfen
+nicht weiter: `v1.4.6`, `v1.4.7`, `v1.4.8` und `V1.4.9` zeigen alle auf
+dasselbe Commit von 2023, und das Commit mit dem Text "v1.4.9" liegt als
+`V1.5.0` da. Der Download-Server (`dragino.com/downloads/`) fuehrt gar keinen
+TrackerD-Ordner.
+
+Der Juni-2024-Stand ist als Grundlage unbrauchbar: er traegt die LS-Ver-
+schmelzung, und auf dieser Hardware sind damit Alarmknopf und LEDs tot --
+`button_event_init()` ist dort auskommentiert (`TrackerD.ino:1211`), und die
+Knopfwahl haengt an `sys.cdevaddr` statt am Geraetetyp.
 
 ## Warum `fix_holds.py` dazugehoert
 
