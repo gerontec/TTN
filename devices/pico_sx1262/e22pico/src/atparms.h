@@ -24,7 +24,7 @@
 
 // Answer to AT+VER / AT+VERSION. Shaped like the LA66's ("EU868 v1.3"): band,
 // firmware level, then the device and what it can do.
-#define AT_VERSION  "EU868 v2.1.0 pico-e22 LoRa+LoRaWAN+Repeater"
+#define AT_VERSION  "EU868 v2.2.1 pico-e22 LoRa+LoRaWAN+Repeater"
 
 #define AT_UART_AN    true    // also serve the UART on GP0/GP1
 #define AT_UART_BAUD  9600    // as the LA66 stick ships from the factory

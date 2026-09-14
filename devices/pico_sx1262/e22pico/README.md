@@ -273,8 +273,10 @@ APPKEY=<32 hex> /home/gh/.venv-chirpstack/bin/python cs_pico.py
 (`nwkKey = NULL`); with a second key RadioLib would switch to 1.1 and the join
 would fail against the profile.
 
-**Uplink**, FPort 1, 8 bytes big endian, every 15 minutes (the duty cycle is
-enforced by RadioLib on top of that):
+**Uplink**, FPort 1, 8 bytes big endian, every 20 minutes by default (the duty
+cycle is enforced by RadioLib on top of that). The interval can be changed
+without a new build -- `AT+TDC=<ms>` at the console or downlink `04 HH LL` --
+and is kept in flash in whole minutes (1-255, 0 = default):
 
 | byte | content |
 |---|---|
@@ -283,6 +285,19 @@ enforced by RadioLib on top of that):
 | 4–5 | frames answered |
 | 6 | RSSI of the last raw packet (dBm, signed) |
 | 7 | SNR (dB, signed) |
+| 8–9 | ADC in millivolts |
+| 10 | gateway RSSI at the node, from the last downlink (dBm, signed; `0x80` = none yet) |
+| 11 | gateway SNR at the node (dB × 4, signed; `0x80` = none yet) |
+| 12 | age of that measurement (minutes, 255 = ≥ 255 or none) |
+| 13 | LinkCheck margin at the gateway (dB; `0xFF` = none yet) |
+| 14 | gateways that heard the LinkCheckReq |
+| 15 | uplink interval (minutes) |
+
+Bytes 0–9 are payload version 1, bytes 10–15 were added in v2.2.0; a decoder
+tells them apart by length. A LinkCheckReq rides on an uplink at most every
+`LW_LINKCHECK_MIN` (150) minutes -- its answer is the downlink that the
+gateway levels are measured on, and 150 min keeps the node under the TTN fair
+use of about ten downlinks a day. Any other downlink updates bytes 10–12 too.
 
 The decoder for it sits in the device profile (`cs_pico.py`, `CODEC`).
 
@@ -294,6 +309,7 @@ The decoder for it sits in the device profile (`cs_pico.py`, `CODEC`).
 | `00` [`HH LL`] | back to the raw channel, optionally returning after `HHLL` minutes |
 | `01` | stay on LoRaWAN, clear a pending return |
 | `02 00\|01` | relay off/on |
+| `04 HH LL` | uplink interval in minutes (1-255), `04 00 00` = default; kept in flash |
 
 ```bash
 ./cs_pico_mode.py lora 30      # 30 minutes of raw channel, then back on its own
@@ -306,6 +322,15 @@ do not want to wait, trigger an uplink (`lwsend x` or `AT+SEND=0,1,1,x`).
 The encoding of that payload is covered by a unit test,
 [`../../../dell/test_cs_pico_mode.py`](../../../dell/test_cs_pico_mode.py)
 (`python3 -m unittest test_cs_pico_mode -v`).
+
+**A downlink with a MIC error is ignored, the uplink still counts as sent**
+(v2.2.1). The gateway forwards to TTN and to the local ChirpStack, and both
+hold a session for this DevAddr; the node belongs to the TTN one. ChirpStack
+answers uplinks with MAC commands the node cannot verify
+(`RADIOLIB_ERR_MIC_MISMATCH`, -1112). Before v2.2.1 that looked like a failed
+uplink: a retry every 60 s and `AT_ERROR (-1112)` on `AT+SENDB`, although the
+frame had arrived. Downlinks from both servers can still collide in the same
+receive window -- only one of them gets transmitted by the gateway.
 
 ## What survives a power cut
 

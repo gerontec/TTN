@@ -63,7 +63,20 @@
 // --- operation -------------------------------------------------------------
 #define LW_PORT           1       // payload (the node's counters)
 #define LW_CONTROL_PORT  10       // downlink commands, see README
-#define LW_INTERVAL_MS   (15UL * 60UL * 1000UL)   // uplink spacing
+#define LW_INTERVAL_MS   (20UL * 60UL * 1000UL)   // uplink spacing (default)
+// Changeable at runtime without a new build: AT+TDC=<ms> at the console, or
+// the downlink LW_TDC_CMD HH LL (minutes) on LW_CONTROL_PORT over the air.
+// Kept in whole minutes in the spare byte of Zustand (storage.h), so the
+// struct length stays and no saved sector is invalidated; 0 = the default.
+#define LW_TDC_CMD        0x04    // downlink command: uplink interval
+#define LW_TDC_MAX_MIN    255
+// How well the node hears the gateway can only be measured on a downlink.
+// Every uplink after at least this many minutes carries a LinkCheckReq; the
+// LinkCheckAns comes back as a downlink and brings RSSI/SNR at the node plus
+// the margin at the gateway. Time-based so that a short AT+TDC does not
+// multiply the downlinks: 150 min = at most 9.6 a day, below the TTN fair
+// use of about 10.
+#define LW_LINKCHECK_MIN  150
 #define LW_DATARATE       3       // DR3 = SF9 BW125; ADR moves this later
 #define LW_ADR            true
 #define LW_CONFIRMED      false   // unconfirmed uplinks, saves downlink time

@@ -122,6 +122,16 @@ static unsigned long lwNaechsterJoin = 0;
 static unsigned long lwJoinPause = LW_JOIN_PAUSE_MS;
 static unsigned long lwNaechsterUplink = 0;
 static unsigned long lwUplinks = 0, lwDownlinks = 0;
+// How well the node hears the gateway: RSSI/SNR of the last downlink, and
+// from the LinkCheckAns how well the gateway heard the node.
+static float gwRssi = 0, gwSnr = 0;
+static bool gwHatMessung = false;
+static unsigned long gwGemessen = 0;     // millis() of that downlink
+static uint8_t lcMargin = 0xFF, lcGateways = 0;
+static bool lcAngefragt = false;         // a LinkCheckReq rides on the uplink
+static bool lcJemals = false;
+static unsigned long lcLetzte = 0;       // millis() of the last LinkCheckReq
+static unsigned long lwIntervallMs();
 static uint8_t lwSeitSicherung = 0;
 static float letzteRssi = 0, letzteSnr = 0;      // for the uplink payload
 
@@ -498,8 +508,12 @@ static uint16_t adcMillivolt() {
   return (uint16_t)((roh * (uint32_t)LW_ADC_REF_MV) / 4095UL);
 }
 
-// 10 bytes, big endian: uptime [min], frames received and answered on the raw
-// channel, RSSI and SNR of the last raw packet, ADC [mV].
+// 16 bytes, big endian: uptime [min], frames received and answered on the raw
+// channel, RSSI and SNR of the last raw packet, ADC [mV] -- that is version 1
+// (10 bytes). Version 2 appends how well the node hears the gateway (RSSI
+// [dBm], SNR [dB x 4], age of that measurement [min], 0x80 = none yet), the
+// LinkCheck margin [dB] and gateway count (0xFF / 0 = none yet) and the
+// uplink interval [min]. A decoder tells the versions apart by length.
 static size_t lorawanNutzlast(uint8_t* out) {
   unsigned long minuten = millis() / 60000UL;
   uint16_t lauf = minuten > 0xFFFF ? 0xFFFF : (uint16_t)minuten;
@@ -512,7 +526,61 @@ static size_t lorawanNutzlast(uint8_t* out) {
   out[6] = (uint8_t)(int8_t)letzteRssi;
   out[7] = (uint8_t)(int8_t)letzteSnr;
   out[8] = (uint8_t)(adc >> 8);  out[9] = (uint8_t)adc;
-  return 10;
+  unsigned long alter = gwHatMessung ? (millis() - gwGemessen) / 60000UL : 255UL;
+  out[10] = gwHatMessung ? (uint8_t)(int8_t)constrain((int)lround(gwRssi), -127, 127) : 0x80;
+  out[11] = gwHatMessung ? (uint8_t)(int8_t)constrain((int)lround(gwSnr * 4.0f), -127, 127) : 0x80;
+  out[12] = (uint8_t)(alter > 254UL ? 255UL : alter);
+  out[13] = lcMargin;
+  out[14] = lcGateways;
+  unsigned long takt = lwIntervallMs() / 60000UL;
+  out[15] = (uint8_t)(takt > 255UL ? 255UL : takt);
+  return 16;
+}
+
+// Called for every downlink: the radio still holds that packet's levels.
+static void downlinkPegelMerken() {
+  gwRssi = radio.getRSSI(true);
+  gwSnr = radio.getSNR();
+  gwGemessen = millis();
+  gwHatMessung = true;
+  if (lcAngefragt) {
+    uint8_t m = 0, c = 0;
+    if (node.getMacLinkCheckAns(&m, &c) == RADIOLIB_ERR_NONE) {
+      lcMargin = m;
+      lcGateways = c;
+    }
+    lcAngefragt = false;
+  }
+  sag("downlink level: RSSI %.0f dBm, SNR %.1f dB; link margin %u dB, %u gateway(s)\n",
+      gwRssi, gwSnr, lcMargin, lcGateways);
+}
+
+// Uplink interval: the minutes kept in flash, or the compiled default.
+static unsigned long lwIntervallMs() {
+  return zustand.intervallMin ? (unsigned long)zustand.intervallMin * 60000UL
+                              : LW_INTERVAL_MS;
+}
+
+// Set the uplink interval (0 = default) and keep it in flash. The running
+// session is written along with it: the block is saved as a whole, and a
+// stale session in it would put the uplink counter back on the next start
+// (see LW_SESSION_EVERY).
+static bool intervallSetzen(unsigned long minuten) {
+  if (minuten > LW_TDC_MAX_MIN) return false;
+  zustand.intervallMin = (uint8_t)minuten;
+  if (zustand.modus == MODE_LORAWAN && lwBereit) {
+    memcpy(zustand.sitzung, node.getBufferSession(), sizeof(zustand.sitzung));
+    zustand.hatSitzung = 1;
+    lwSeitSicherung = 0;
+  }
+  sicherungSchreiben("interval");
+  unsigned long ms = lwIntervallMs();
+  if (zustand.modus == MODE_LORAWAN) {
+    unsigned long wartet = (unsigned long)node.timeUntilUplink();
+    lwNaechsterUplink = millis() + (wartet > ms ? wartet : ms);
+  }
+  sag("uplink interval: %lu min%s\n", ms / 60000UL, minuten ? "" : " (default)");
+  return true;
 }
 
 // Downlink on the control port: back to the raw channel, optionally timed.
@@ -553,6 +621,12 @@ static void lorawanDownlink(const uint8_t* daten, size_t len, uint8_t port) {
       sag("control command: poll, uplink in %lu ms\n", wartet);
       break;
     }
+    case LW_TDC_CMD: {                 // uplink interval: 04 HH LL minutes
+      unsigned long minuten = len >= 3 ? (((unsigned long)daten[1] << 8) | daten[2]) : 0;
+      if (!intervallSetzen(minuten))
+        sag("control command: interval %lu min out of range\n", minuten);
+      break;
+    }
     default:
       sag("control command unknown: 0x%02x\n", daten[0]);
       break;
@@ -566,9 +640,27 @@ static void lorawanUplink(const uint8_t* nutz, size_t len, uint8_t port) {
   size_t abLen = sizeof(ab);
   LoRaWANEvent_t hin, her;
 
+  if (!lcJemals || millis() - lcLetzte >= LW_LINKCHECK_MIN * 60000UL) {
+    if (node.sendMacCommandReq(RADIOLIB_LORAWAN_MAC_LINK_CHECK) == RADIOLIB_ERR_NONE) {
+      lcAngefragt = true;
+      lcJemals = true;
+      lcLetzte = millis();
+    }
+  }
+
   int16_t state = node.sendReceive(nutz, len, port, ab, &abLen, LW_CONFIRMED,
                                    &hin, &her);
 
+  // A downlink that fails the MIC check does not undo the uplink: it went
+  // out and was received. Seen on 14 Sep 2026 -- the local ChirpStack holds a
+  // second session for this DevAddr and answers with MAC commands the node
+  // cannot verify (RADIOLIB_ERR_MIC_MISMATCH). Treated as a plain uplink
+  // without downlink, otherwise the node retried every 60 s although every
+  // one of those uplinks had arrived.
+  if (state == RADIOLIB_ERR_MIC_MISMATCH) {
+    sag("uplink sent, foreign downlink ignored (MIC mismatch)\n");
+    state = RADIOLIB_ERR_NONE;
+  }
   if (state < RADIOLIB_ERR_NONE) {
     sag("uplink ERROR %d\n", state);
     if (state == RADIOLIB_ERR_NETWORK_NOT_JOINED || state == RADIOLIB_ERR_SESSION_DISCARDED) {
@@ -595,9 +687,11 @@ static void lorawanUplink(const uint8_t* nutz, size_t len, uint8_t port) {
 
   // Next uplink: the later of the wanted interval and the duty cycle lock.
   unsigned long wartet = (unsigned long)node.timeUntilUplink();
-  lwNaechsterUplink = millis() + (wartet > LW_INTERVAL_MS ? wartet : LW_INTERVAL_MS);
+  lwNaechsterUplink = millis() + (wartet > lwIntervallMs() ? wartet : lwIntervallMs());
 
+  if (state == 0) lcAngefragt = false;  // the LinkCheckReq got no answer either
   if (state > 0) {                     // downlink in window 1 or 2
+    downlinkPegelMerken();
     lwDownlinks++;
     lorawanDownlink(ab, abLen, her.fPort);
   }
@@ -618,6 +712,7 @@ static void lorawanSchleife() {
     LoRaWANEvent_t her;
     int16_t got = node.getDownlinkClassC(ab, &abLen, &her);
     if (got > 0) {
+      downlinkPegelMerken();
       lwDownlinks++;
       lorawanDownlink(ab, abLen, her.fPort);
     }
@@ -625,7 +720,7 @@ static void lorawanSchleife() {
 
   if ((long)(millis() - lwNaechsterUplink) < 0) return;
 
-  uint8_t nutz[10];
+  uint8_t nutz[16];
   size_t n = lorawanNutzlast(nutz);
   lorawanUplink(nutz, n, LW_PORT);
 }
@@ -762,6 +857,12 @@ static void atCfg(Stream &s) {
   atAntwort(s, "AT+ADR=%d", LW_ADR ? 1 : 0);
   atAntwort(s, "AT+DR=%d", LW_DATARATE);
   atAntwort(s, "AT+FCU=%lu", (unsigned long)(lwBereit ? node.getFCntUp() : 0));
+  atAntwort(s, "AT+TDC=%lu", lwIntervallMs());
+  if (gwHatMessung)
+    atAntwort(s, "AT+GWRSSI=%.0f,%.1f,%lu,%u,%u", gwRssi, gwSnr,
+              (millis() - gwGemessen) / 60000UL, lcMargin, lcGateways);
+  else
+    atAntwort(s, "AT+GWRSSI=none");
   // The mode constants are the AT values themselves: 0 = LORA, 1 = LORAWAN,
   // 2 = REPEAT (storage.h).
   atAntwort(s, "AT+LORAWAN=%d", zustand.modus);
@@ -788,6 +889,8 @@ static void atHilfe(Stream &s) {
   atAntwort(s, "AT+LORAWAN=0|1|2|3[,min] 0 = raw channel, 1 = LoRaWAN,");
   atAntwort(s, "                        2 = repeater, 3 = repeater + report");
   atAntwort(s, "AT+JOIN                 trigger an OTAA join");
+  atAntwort(s, "AT+TDC=<ms>|0           uplink interval, whole minutes, 0 = default");
+  atAntwort(s, "AT+GWRSSI=?             gateway at the node: rssi,snr,age min,margin,gws");
   atAntwort(s, "AT+NJS=?                1 = session active");
   atAntwort(s, "AT+SEND=<cfm>,<port>,<len>,<text>");
   atAntwort(s, "AT+SENDB=<cfm>,<port>,<len>,<hex>");
@@ -808,14 +911,19 @@ static bool atSenden(Stream &s, const uint8_t* daten, size_t len, uint8_t port,
     size_t abLen = sizeof(ab);
     LoRaWANEvent_t hin, her;
     int16_t st = node.sendReceive(daten, len, port, ab, &abLen, bestaetigt, &hin, &her);
+    if (st == RADIOLIB_ERR_MIC_MISMATCH) {   // foreign downlink, see lorawanUplink()
+      sag("uplink sent, foreign downlink ignored (MIC mismatch)\n");
+      st = RADIOLIB_ERR_NONE;
+    }
     if (st < RADIOLIB_ERR_NONE) { atAntwort(s, "AT_ERROR (%d)", st); return false; }
     lwUplinks++;
     if (st > 0) {
+      downlinkPegelMerken();
       lwDownlinks++;
       lorawanDownlink(ab, abLen, her.fPort);
     }
     unsigned long wartet = (unsigned long)node.timeUntilUplink();
-    lwNaechsterUplink = millis() + (wartet > LW_INTERVAL_MS ? wartet : LW_INTERVAL_MS);
+    lwNaechsterUplink = millis() + (wartet > lwIntervallMs() ? wartet : lwIntervallMs());
     return true;
   }
   if (len > 128) { atAntwort(s, "AT_PARAM_ERROR"); return false; }
@@ -865,6 +973,12 @@ static bool atBefehl(Stream &s, char* zeile) {
   if (strcmp(name, "FCU") == 0)    { atAntwort(s, "%lu", (unsigned long)(lwBereit ? node.getFCntUp() : 0)); return true; }
   if (strcmp(name, "RSSI") == 0)   { atAntwort(s, "%.0f", letzteRssi); return true; }
   if (strcmp(name, "SNR") == 0)    { atAntwort(s, "%.1f", letzteSnr); return true; }
+  if (strcmp(name, "GWRSSI") == 0) {   // how well the node hears the gateway
+    if (!gwHatMessung) { atAntwort(s, "none"); return true; }
+    atAntwort(s, "%.0f,%.1f,%lu,%u,%u", gwRssi, gwSnr,
+              (millis() - gwGemessen) / 60000UL, lcMargin, lcGateways);
+    return true;
+  }
   if (strcmp(name, "CFG") == 0)    { atCfg(s); return true; }
 
   // --- raw channel parameters: readable, not writable ---
@@ -917,6 +1031,15 @@ static bool atBefehl(Stream &s, char* zeile) {
   if (strcmp(name, "DR") == 0) {
     if (!wert || frage) { atAntwort(s, "%d", LW_DATARATE); return true; }
     if (node.setDatarate((uint8_t)strtoul(wert, NULL, 10)) != RADIOLIB_ERR_NONE) {
+      atAntwort(s, "AT_PARAM_ERROR");
+      return false;
+    }
+    return true;
+  }
+  if (strcmp(name, "TDC") == 0) {      // uplink interval in ms, as on the TrackerD
+    if (!wert || frage) { atAntwort(s, "%lu", lwIntervallMs()); return true; }
+    unsigned long ms = strtoul(wert, NULL, 10);
+    if (ms % 60000UL != 0 || !intervallSetzen(ms / 60000UL)) {
       atAntwort(s, "AT_PARAM_ERROR");
       return false;
     }

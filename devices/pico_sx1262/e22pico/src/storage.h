@@ -37,7 +37,8 @@ struct Zustand {
   uint8_t modus;        // MODE_LORA/_LORAWAN/_REPEAT/_REPEAT_ID
   uint8_t hatNonces;    // 1 = nonces[] holds a valid state
   uint8_t hatSitzung;   // 1 = sitzung[] holds a valid session
-  uint8_t reserve;
+  uint8_t intervallMin; // uplink interval in minutes, 0 = LW_INTERVAL_MS
+                        // (was the spare byte -- same size, same layout)
   uint8_t nonces[RADIOLIB_LORAWAN_NONCES_BUF_SIZE];
   uint8_t sitzung[RADIOLIB_LORAWAN_SESSION_BUF_SIZE];
 };

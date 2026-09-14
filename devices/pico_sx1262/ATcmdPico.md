@@ -59,6 +59,7 @@ den Sendeauftrag ablehnt.
 | `AT+ID` | Stationsname |
 | `AT+VER`, `AT+VERSION` | `EU868 v2.0.0 pico-e22 LoRa+LoRaWAN` — beide Schreibweisen, weil Draginos Firmwares sich da nicht einig sind |
 | `AT+RSSI`, `AT+SNR` | Empfangswerte des letzten Pakets |
+| `AT+GWRSSI` | `rssi,snr,alter_min,margin,gateways` — wie gut der Knoten das Gateway hoert (letzter Downlink) und die LinkCheck-Marge; `none` ohne Messung |
 | `AT+CFG` | alles auf einmal, als `AT+X=Y`-Zeilen |
 
 ## Rohkanal
@@ -100,6 +101,7 @@ sonst risse das Neuaufsetzen des Funkmoduls die eigene Quittung weg.
 |---|---|---|
 | `AT+ADR` | `0` / `1` | Adaptive Data Rate |
 | `AT+DR` | `0`..`7` | Datenrate, Vorgabe `3` (SF9 BW125) |
+| `AT+TDC` | `<ms>` in ganzen Minuten (max. 255 min), `0` = Vorgabe 20 min | Uplink-Abstand, bleibt im Flash. Ueber Funk: Downlink FPort 10 `04 HH LL` (Minuten) |
 | `AT+JOIN` | ausfuehren | OTAA-Join sofort anstossen. Ausserhalb des LoRaWAN-Modus `AT_ERROR` |
 
 ## Senden und Empfangen
