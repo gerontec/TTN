@@ -1,0 +1,332 @@
+//The function is :
+function decodeUplinkDragino(input) {
+  var port = input.fPort;
+  var bytes = input.bytes;
+  // Decode an uplink message from a buffer
+  // (array) of bytes to an object of fields.
+  var i;
+  var con;
+  var str = '';
+  var major = 1;
+  var minor = 1;
+  var rssi = 0;
+  var power = 0;
+  var device_information1 = 0;
+  var device_information2 = 0;
+  var device_information3 = 0;
+  var addr = '';
+  var alarm = 0; //Alarm status
+  var batV = 0; //Battery,units:V
+  var bat = 0; //Battery,units:V
+  var mod = 0;
+  var led_updown = ''; //LED status for position,uplink and downlink
+  var Firmware = 0; // Firmware version; 5 bits
+  var hum = 0; //hum,units: °
+  var tem = 0; //tem,units: °
+  var latitude = 0; //gps latitude,units: °
+  var longitude = 0; //gps longitude,units: °
+  var location = 0;
+  var time = 0;
+  var date = 0;
+  var sub_band;
+  var freq_band;
+  var sensor;
+  var firm_ver;
+  var sensor_mod;
+  var gps_mod;
+  var ble_mod;
+  var pnackmd;
+  var lon;
+  var intwk;
+  switch (input.fPort) {
+    case 2:
+      var decode = {};
+      bat = ((bytes[8] & 0x3f) << 8) | bytes[9]; //Battery,units:V
+      latitude = ((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]) / 1000000; //gps latitude,units: °
+      longitude = ((bytes[4] << 24) | (bytes[5] << 16) | (bytes[6] << 8) | bytes[7]) / 1000000; //gps longitude,units: °
+
+      if (latitude < 190 && latitude > -190) {
+        if (longitude < 190 && longitude > -190) {
+          if (latitude !== 0 && longitude !== 0) {
+            field: 'location', (location = '' + latitude + ',' + longitude + '');
+          }
+        }
+      } else location = 'invalid value';
+
+      alarm = bytes[8] & 0x40 ? 'TRUE' : 'FALSE'; //Alarm status
+      batV = (((bytes[8] & 0x3f) << 8) | bytes[9]) / 1000; //Battery,units:V
+      mod = bytes[10] & 0xc0;
+
+      if (mod !== 1) {
+        hum = ((bytes[11] << 8) | bytes[12]) / 10; //hum,units: °
+        tem = ((bytes[13] << 8) | bytes[14]) / 10; //tem,units: °
+      }
+      led_updown = bytes[10] & 0x20 ? 'ON' : 'OFF'; //LED status for position,uplink and downlink
+      intwk = bytes[10] & 0x10 ? 'MOVE' : 'STILL';
+
+      {
+        var decode = {};
+        decode.Location = location;
+        decode.Latitude = latitude;
+        decode.Longitude = longitude;
+        decode.Hum = hum;
+        decode.Tem = tem;
+        // batV wird oben aus Byte 8/9 gerechnet, fiel hier aber unter den Tisch:
+        // der Positions-Uplink (fPort 2) lieferte als einziger Zweig keine
+        // Spannung, obwohl das Geraet sie mitsendet.
+        decode.BatV = batV;
+        decode.ALARM_status = alarm;
+        decode.MD = mod;
+        decode.LON = led_updown;
+        decode.Transport = intwk;
+        return {
+          data: decode,
+        };
+      }
+
+      break;
+    case 3:
+      {
+        var decode = {};
+
+        bat = ((bytes[8] & 0x3f) << 8) | bytes[9]; //Battery,units:V
+
+        latitude = ((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]) / 1000000; //gps latitude,units: °
+        longitude = ((bytes[4] << 24) | (bytes[5] << 16) | (bytes[6] << 8) | bytes[7]) / 1000000; //gps longitude,units: °
+
+        if (latitude < 190 && latitude > -190) {
+          if (longitude < 190 && longitude > -190) {
+            if (latitude !== 0 && longitude !== 0) {
+              field: 'location', (location = '' + latitude + ',' + longitude + '');
+            }
+          }
+        } else location = 'invalid value';
+
+        alarm = bytes[8] & 0x40 ? 'TRUE' : 'FALSE'; //Alarm status
+        batV = (((bytes[8] & 0x3f) << 8) | bytes[9]) / 1000; //Battery,units:V
+        mod = bytes[10] & 0xc0;
+
+        if (mod !== 1) {
+          hum = ((bytes[11] << 8) | bytes[12]) / 10; //hum,units: °
+          tem = ((bytes[13] << 8) | bytes[14]) / 10; //tem,units: °
+        }
+        led_updown = bytes[10] & 0x20 ? 'ON' : 'OFF'; //LED status for position,uplink and downlink
+        intwk = bytes[10] & 0x10 ? 'MOVE' : 'STILL';
+        {
+          var decode = {};
+          decode.Location = location;
+          decode.Latitude = latitude;
+          decode.Longitude = longitude;
+          decode.BatV = batV;
+          decode.ALARM_status = alarm;
+          decode.MD = mod;
+          decode.LON = led_updown;
+          decode.Transport = intwk;
+          return {
+            data: decode,
+          };
+        }
+      }
+      break;
+    case 4:
+      {
+        var decode = {};
+        latitude = ((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]) / 1000000; //gps latitude,units: °
+        longitude = ((bytes[4] << 24) | (bytes[5] << 16) | (bytes[6] << 8) | bytes[7]) / 1000000; //gps longitude,units: °
+
+        if (latitude < 190 && latitude > -190) {
+          if (longitude < 190 && longitude > -190) {
+            if (latitude !== 0 && longitude !== 0) {
+              field: 'location', (location = '' + latitude + ',' + longitude + '');
+            }
+          }
+        } else location = 'invalid value';
+
+        var year = (bytes[8] << 8) | bytes[9];
+        var Month = bytes[10];
+        var day = bytes[11];
+        var hour = bytes[12];
+        var min = bytes[13];
+        var sen = bytes[14];
+
+        date = year + ':' + Month + ':' + day;
+        time = hour + ':' + min + ':' + sen;
+
+        decode.Location = location;
+        decode.Latitude = latitude;
+        // Longitude fiel im Werks-Decoder unter den Tisch - ausgerechnet im
+        // Zweig, der die nachgelieferte Spur bringt.
+        decode.Longitude = longitude;
+        decode.Date = date;
+        decode.Time = time;
+        // Sortierbar und ohne Ratespiel: die GPS-Zeit des Fixes als ISO-8601
+        // in UTC. Nur daran laesst sich eine nachgelieferte Spur wieder an
+        // die richtige Stelle legen - der Uplink kommt Stunden spaeter.
+        var two = function (v) { return (v < 10 ? '0' : '') + v; };
+        decode.FixTime = year + '-' + two(Month) + '-' + two(day) + 'T' +
+                         two(hour) + ':' + two(min) + ':' + two(sen) + 'Z';
+        return {
+          data: decode,
+        };
+      }
+      break;
+    case 7:
+      {
+        var decode = {};
+        alarm = bytes[0] & 0x40 ? 'TRUE' : 'FALSE'; //Alarm status
+        batV = (((bytes[0] & 0x3f) << 8) | bytes[1]) / 1000; //Battery,units:V
+        mod = bytes[2] & 0xc0;
+        led_updown = bytes[2] & 0x20 ? 'ON' : 'OFF'; //LED status for position,uplink and downlink
+
+        decode.BatV = batV;
+        decode.ALARM_status = alarm;
+        decode.MD = mod;
+        decode.LON = led_updown;
+        return {
+          data: decode,
+        };
+      }
+      break;
+    case 8:
+      {
+        var decode = {};
+        con = '';
+        for (i = 0; i < 6; i++) {
+          con = bytes[i].toString();
+          str += String.fromCharCode(con);
+        }
+        var wifissid = str,
+          rssi = (bytes[6] << 24) >> 24;
+        alarm = bytes[7] & 0x40 ? 'TRUE' : 'FALSE'; //Alarm status
+        batV = (((bytes[7] & 0x3f) << 8) | bytes[8]) / 1000; //Battery,units:V
+        mod = (bytes[9] & 0xc0) >> 6;
+        led_updown = bytes[9] & 0x20 ? 'ON' : 'OFF'; //LED status for position,uplink and downlink
+
+        decode.WIFISSID = wifissid;
+        decode.RSSI = rssi;
+        decode.BatV = batV;
+        decode.ALARM_status = alarm;
+        decode.MD = mod;
+        decode.LON = led_updown;
+        return {
+          data: decode,
+        };
+      }
+      break;
+    case 5:
+      {
+        var decode = {};
+        if (bytes[0] == 0x13) sensor_mode = 'TrackerD';
+        else sensor_mode = 'NULL';
+
+        if (bytes[4] == 0xff) sub_band = 'NULL';
+        else sub_band = bytes[4];
+
+        if (bytes[3] == 0x01) freq_band = 'EU868';
+        else if (bytes[3] == 0x02) freq_band = 'US915';
+        else if (bytes[3] == 0x03) freq_band = 'IN865';
+        else if (bytes[3] == 0x04) freq_band = 'AU915';
+        else if (bytes[3] == 0x05) freq_band = 'KZ865';
+        else if (bytes[3] == 0x06) freq_band = 'RU864';
+        else if (bytes[3] == 0x07) freq_band = 'AS923';
+        else if (bytes[3] == 0x08) freq_band = 'AS923_1';
+        else if (bytes[3] == 0x09) freq_band = 'AS923_2';
+        else if (bytes[3] == 0x0a) freq_band = 'AS923_3';
+        else if (bytes[3] == 0x0b) freq_band = 'CN470';
+        else if (bytes[3] == 0x0c) freq_band = 'EU433';
+        else if (bytes[3] == 0x0d) freq_band = 'KR920';
+        else if (bytes[3] == 0x0e) freq_band = 'MA869';
+
+        firm_ver = (bytes[1] & 0x0f) + '.' + ((bytes[2] >> 4) & 0x0f) + '.' + (bytes[2] & 0x0f);
+        batV = ((bytes[5] << 8) | bytes[6]) / 1000;
+        semsor_mod = (bytes[7] >> 6) & 0x3f;
+        gps_mod = (bytes[7] >> 4) & 0x03;
+        ble_mod = bytes[7] & 0x0f;
+        // Werks-Decoder wies `panackmd` zu und gab `pnackmd` aus, weshalb
+        // PNACKMD immer undefiniert blieb. Bit 2 von Byte 8, als 0/1 wie
+        // die anderen Schalter.
+        pnackmd = bytes[8] & 0x04 ? 1 : 0;
+        lon = (bytes[8] >> 1) & 0x01 ? 'ON' : 'OFF';
+        intwk = bytes[8] & 0x01;
+
+        if (semsor_mod == 1) sensor = 'GPS';
+        else if (semsor_mod == 2) sensor = 'BLE';
+        else if (intwk == 1) sensor = 'Spots';
+        else if (semsor_mod == 3) sensor = 'BLE+GPS Hybrid';
+
+        decode.BatV = batV;
+        decode.SENSOR_MODEL = sensor_mode;
+        decode.FIRMWARE_VERSION = firm_ver;
+        decode.FREQUENCY_BAND = freq_band;
+        decode.SUB_BAND = sub_band;
+        decode.SMODE = sensor;
+        decode.GPS_M0D = gps_mod;
+        decode.BLE_MD = ble_mod;
+        decode.PNACKMD = pnackmd;
+        decode.LON = lon;
+        decode.Intwk = intwk;
+        return {
+          data: decode,
+        };
+      }
+      break;
+    case 6: {
+      var decode = {};
+      major = (bytes[16] << 8) | bytes[17];
+
+      minor = (bytes[18] << 8) | bytes[19];
+
+      power = bytes[15];
+
+      rssi = (bytes[23] << 24) >> 24;
+
+      con = '';
+      for (i = 0; i < 16; i++) {
+        con += bytes[i].toString(16);
+      }
+      value = con;
+      var uuid = value;
+      alarm = bytes[24] & 0x40 ? 'TRUE' : 'FALSE'; //Alarm status
+      batV = (((bytes[24] & 0x3f) << 8) | bytes[25]) / 1000; //Battery,units:V
+      mod = (bytes[26] & 0xc0) >> 6;
+      led_updown = bytes[26] & 0x20 ? 'ON' : 'OFF'; //LED status for position,uplink and downlink
+      if (bytes[26] & (0xc0 == 0x40)) {
+        hum = ((bytes[27] << 8) | bytes[28]) / 10; //hum,units: °
+        tem = ((bytes[29] << 8) | bytes[30]) / 10; //tem,units: °
+      }
+      decode.BatV = batV;
+      decode.ALARM_status = alarm;
+      decode.MD = mod;
+      decode.LON = led_updown;
+      decode.UUID = uuid;
+      decode.MAJOR = major;
+      decode.MINOR = minor;
+      decode.RSSI = rssi;
+      decode.POWER = power;
+      return {
+        data: decode,
+      };
+    }
+  }
+}
+
+
+// TTN Mapper (webhook "ttnmapper"): lowercase coordinates plus an accuracy
+// indicator, only for positions sent live on fPort 2/3. fPort 4 (datalog
+// replay) is left out on purpose -- its RSSI/gateway belong to the moment of
+// re-joining at home, not to the fix position. hdop 5 is the upper bound: the
+// firmware accepts a fix only at HDOP <= AT+PDOP with a 3D fix, and PDOP was
+// set to 5 by downlink AD 00 32 on 14.09.2026 (TTN Mapper rejects hdop > 5).
+function decodeUplink(input) {
+  var r = decodeUplinkDragino(input);
+  var d = r && r.data;
+  if (d && (input.fPort === 2 || input.fPort === 3) &&
+      typeof d.Latitude === 'number' && typeof d.Longitude === 'number' &&
+      d.Latitude !== 0 && d.Longitude !== 0 &&
+      Math.abs(d.Latitude) <= 90 && Math.abs(d.Longitude) <= 180) {
+    d.latitude = d.Latitude;
+    d.longitude = d.Longitude;
+    d.hdop = 5;
+  }
+  return r;
+}
